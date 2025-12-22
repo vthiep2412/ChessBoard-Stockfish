@@ -46,11 +46,19 @@ void OptionsMap::setoption(std::istringstream& is) {
 
     // Read the option name (can contain spaces)
     while (is >> token && token != "value")
-        name += (name.empty() ? "" : " ") + token;
+    {
+        if (!name.empty())
+            name += " ";
+        name += token;
+    }
 
     // Read the option value (can contain spaces)
     while (is >> token)
-        value += (value.empty() ? "" : " ") + token;
+    {
+        if (!value.empty())
+            value += " ";
+        value += token;
+    }
 
     if (options_map.count(name))
         options_map[name] = value;
