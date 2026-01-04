@@ -21,7 +21,7 @@ data/
 Stockfish-master/
 # Keep root stockfish.exe tracked (it's the binary we use)
 # !stockfish.exe
-
+engines/
 # Misc
 .DS_Store
 Thumbs.db
