@@ -1,0 +1,6 @@
+{
+  "ponder_enabled": true,
+  "engine_depth": 8,
+  "engine_contempt": 50,
+  "engine_skill": 20
+}

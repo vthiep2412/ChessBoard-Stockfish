@@ -10,18 +10,15 @@ venv/
 *.egg-info/
 dist/
 build/
-
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
-
+stockfish.exe
+data/
 # Stockfish builds
-Stockfish-master/src/*.exe
-Stockfish-master/src/*.o
-Stockfish-master/src/*.d
-
+Stockfish-master/
 # Keep root stockfish.exe tracked (it's the binary we use)
 # !stockfish.exe
 
@@ -29,3 +26,4 @@ Stockfish-master/src/*.d
 .DS_Store
 Thumbs.db
 *.log
+Stockfish-master
