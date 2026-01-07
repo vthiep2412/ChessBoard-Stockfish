@@ -279,15 +279,97 @@ class Heuristics:
                     # Hanging piece!
                     current_penalty = val
             
-            if piece.color == chess.WHITE:
+        if piece.color == chess.WHITE:
                 white_threats += current_penalty
             else:
                 black_threats += current_penalty
                 
         # Net penalty from White's perspective
-        # If White has threats, score goes down.
-        # If Black has threats, score goes up.
         return white_threats - black_threats
+
+    @staticmethod
+    def get_move_safety_bias(board, move):
+        """
+        Calculates a 'Safety Bias' for a potential move.
+        OPTIMIZED: Avoids board.push/pop for speed.
+        Returns:
+            Positive Score: Move captures something valuable (Good).
+            Negative Score: Move puts piece on a Hanging Square (Bad).
+        """
+        score = 0
+        
+        to_sq = move.to_square
+        from_sq = move.from_square
+        
+        # 1. Good Capture? (MVV-LVA logic)
+        # Fast check using board.is_capture(move) is still good, or just check content
+        victim = board.piece_at(to_sq)
+        attacker = board.piece_at(from_sq)
+        
+        # Note: attacker might be None if we passed a move but board doesn't have piece? 
+        # (Shouldn't happen in legal generation)
+        if attacker:
+            a_val = Heuristics.MATERIAL_MG.get(attacker.piece_type, 0)
+            
+            if victim:
+                v_val = Heuristics.MATERIAL_MG.get(victim.piece_type, 0)
+                score += (v_val - a_val)
+            elif board.is_en_passant(move):
+                score += 100 # Good capture
+            
+            # 2. Safety Check (Is destination attacked?)
+            # We check if the destination square is attacked by the opponent.
+            # We assume current board state.
+            
+            # Who is the opponent?
+            opponent = not board.turn
+            
+            # attackers() returns a SquareSet
+            # This is fast-ish bitboard op
+            attackers = board.attackers(opponent, to_sq)
+            
+            if attackers:
+                # Square is guarded by opponent.
+                # If we move there, we might get eaten.
+                
+                # Lowest value attacker?
+                lowest_attacker_val = 9999
+                for a in attackers:
+                    # Look up piece at attacker square
+                    # Only consider pieces that are NOT the one being captured (victim)
+                    # (Wait, victim is on to_sq, attackers are elsewhere)
+                    a_pt = board.piece_at(a).piece_type
+                    av = Heuristics.MATERIAL_MG.get(a_pt, 0)
+                    if av < lowest_attacker_val: lowest_attacker_val = av
+                
+                # Are we doing a "Bad Trade"?
+                # If we are a Queen (900) moving to a square attacked by a Pawn (100).
+                # Even if we are defended, we lose 800.
+                if lowest_attacker_val < a_val:
+                    score -= (a_val - lowest_attacker_val)
+                    
+                # If we are NOT defended?
+                # We need to know if we are defended at the target.
+                # Since we haven't moved yet, we can't easily check 'defenders' of the target square 
+                # effectively because our own body might be blocking, or we are the defender move.
+                # approximation:
+                # If attacked by ANY piece and we are a Queen, and it's not a capture -> Bad.
+                
+                # Simple "Hanging" heuristic for non-captures:
+                if not victim:
+                     # Moving to empty square that is attacked.
+                     # If we are expensive, and attacked by cheap, BAD.
+                     if lowest_attacker_val < a_val:
+                         # e.g. Queen moves to square attacked by Pawn
+                         score -= (a_val - lowest_attacker_val) * 2 # Penalty!
+                     else:
+                        # Attacked by equal/stronger piece.
+                        # Need to check if we have support.
+                        # Complex without push/pop. 
+                        # Conservative: Small penalty for moving under attack?
+                        score -= 50 
+        
+        return score
 
     @staticmethod
     def evaluate(board):

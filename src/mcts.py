@@ -135,6 +135,7 @@ class MCTS:
                 
                 # 4. Tactical Safety Bias (Anti-Blunder)
                 safety_bias = Heuristics.get_move_safety_bias(board, move)
+                # safety_bias = 0
                 
                 if safety_bias < -500:
                     # Hanging Queen or Rook? Almost forbidden.

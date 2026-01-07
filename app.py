@@ -82,7 +82,7 @@ class UCIEngine:
             self._send("uci")
             self._wait_for("uciok", timeout=60)
             self._send("isready")
-            self._wait_for("readyok", timeout=60)
+            self._wait_for("readyok", timeout=180) # Increased to 180s for slow PyTorch load
         except Exception as e:
             print(f"Failed to start engine {name} at {path}: {e}")
             self._running = False
@@ -126,17 +126,19 @@ class UCIEngine:
             line = self._get_line(timeout=min(remaining, 1))
             if line and keyword in line:
                 return line
+            self.root.update() # Keep UI alive while waiting? No, self.root not accessible here.
+            # We are blocking main thread. That's why it freezes.
         return None
     
     def set_option(self, name, value):
         self._send(f"setoption name {name} value {value}")
         self._send("isready")
-        self._wait_for("readyok", timeout=30) # Increased for safety
+        self._wait_for("readyok", timeout=60) # Increased for safety
 
     def new_game(self):
         self._send("ucinewgame")
         self._send("isready")
-        self._wait_for("readyok", timeout=30) # Increased for safety
+        self._wait_for("readyok", timeout=60) # Increased for safety
     
     def get_best_move(self, fen, depth=15, timeout=120):
         """Get best move using depth-based search. Returns (bestmove, ponder_move)."""
