@@ -122,7 +122,7 @@ class UCIEngine:
     def new_game(self):
         self._send("ucinewgame")
         self._send("isready")
-        self._wait_for("readyok", timeout=5)
+        self._wait_for("readyok", timeout=120)  # Increased for PyTorch reload
     
     def get_best_move(self, fen, depth=15, timeout=120):
         self._send(f"position fen {fen}")

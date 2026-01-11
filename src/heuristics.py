@@ -279,7 +279,7 @@ class Heuristics:
                     # Hanging piece!
                     current_penalty = val
             
-        if piece.color == chess.WHITE:
+            if piece.color == chess.WHITE:
                 white_threats += current_penalty
             else:
                 black_threats += current_penalty

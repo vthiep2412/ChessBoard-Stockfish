@@ -88,11 +88,8 @@ def main():
             
             elif line == "ucinewgame":
                 log("PROCESSING: ucinewgame")
-                if mcts is not None:
-                     # DO NOT RELOAD MODEL - KEEPS IT FAST
-                     # mcts = MCTS(model, device=device) # Creates new MCTS but reuses model object? 
-                     # Actually we just want to clear tree.
-                     mcts.clear_tree() 
+                # MCTS tree is automatically cleared when run() creates a new root node.
+                # Model stays loaded - DO NOT reload PyTorch!
                 board = chess.Board()
                 log("New Game Ready (Instant).")
             

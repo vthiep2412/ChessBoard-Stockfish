@@ -126,8 +126,6 @@ class UCIEngine:
             line = self._get_line(timeout=min(remaining, 1))
             if line and keyword in line:
                 return line
-            self.root.update() # Keep UI alive while waiting? No, self.root not accessible here.
-            # We are blocking main thread. That's why it freezes.
         return None
     
     def set_option(self, name, value):
