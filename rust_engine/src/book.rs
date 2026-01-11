@@ -3,7 +3,7 @@
 
 use chess::{Board, ChessMove, Square, Piece, File, Rank};
 use std::fs::File as FsFile;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Read};
 use std::path::Path;
 
 /// Polyglot book entry (16 bytes each)
@@ -25,6 +25,13 @@ impl OpeningBook {
     pub fn load(path: &Path) -> Option<Self> {
         let file = FsFile::open(path).ok()?;
         let file_size = file.metadata().ok()?.len();
+        
+        // Validate file size is a multiple of 16 bytes (each entry is 16 bytes)
+        if file_size % 16 != 0 {
+            eprintln!("Warning: Book file size {} is not a multiple of 16, may be corrupt", file_size);
+            return None;
+        }
+        
         let entry_count = file_size / 16;
         
         let mut reader = BufReader::new(file);
@@ -36,11 +43,12 @@ impl OpeningBook {
                 break;
             }
             
+            // Use slice-to-array conversion for cleaner parsing
             let entry = BookEntry {
-                key: u64::from_be_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]]),
-                mv: u16::from_be_bytes([buf[8], buf[9]]),
-                weight: u16::from_be_bytes([buf[10], buf[11]]),
-                learn: u32::from_be_bytes([buf[12], buf[13], buf[14], buf[15]]),
+                key: u64::from_be_bytes(buf[0..8].try_into().unwrap()),
+                mv: u16::from_be_bytes(buf[8..10].try_into().unwrap()),
+                weight: u16::from_be_bytes(buf[10..12].try_into().unwrap()),
+                learn: u32::from_be_bytes(buf[12..16].try_into().unwrap()),
             };
             
             entries.push(entry);

@@ -5,7 +5,7 @@ mod search;
 mod eval;
 mod book;
 
-use chess::{Board, MoveGen, ChessMove};
+use chess::{Board, MoveGen};
 use std::str::FromStr;
 
 // Global book instance (loaded once)

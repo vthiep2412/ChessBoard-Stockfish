@@ -276,6 +276,14 @@ class ChessApp:
         self.ponder_move = None
         self.is_pondering = False
         
+        # Multi-line analysis state
+        self.analysis_lines = tk.IntVar(value=3)  # Number of PV lines to show
+        self.show_analysis = tk.BooleanVar(value=False)  # Toggle analysis panel
+        self.analysis_pv_data = []  # List of (score, pv_moves) tuples
+        self.analysis_arrows = []  # List of (from_sq, to_sq, color) for arrows
+        self.analysis_engine = None  # Dedicated engine for multi-PV analysis
+        self.analysis_running = False  # Flag to control analysis thread
+        
         # CvC move sync event
         self.cvc_move_done = threading.Event()
         
@@ -590,6 +598,35 @@ class ChessApp:
                                             bg=self.BG_COLOR, fg=self.TEXT_COLOR)
         self.bottom_player_label.pack(anchor="w", pady=(5, 0))
         
+        # ==========================================
+        # ANALYSIS PANEL (below board)
+        # Shows multi-PV lines like Lichess/Chess.com
+        # ==========================================
+        self.analysis_frame = tk.Frame(board_container, bg=self.PANEL_COLOR)
+        
+        # Analysis header with toggle
+        analysis_header = tk.Frame(self.analysis_frame, bg=self.PANEL_COLOR)
+        analysis_header.pack(fill="x", padx=5, pady=(5, 2))
+        tk.Label(analysis_header, text="♜ Stockfish Analysis", font=("Arial", 10, "bold"),
+                 bg=self.PANEL_COLOR, fg=self.TEXT_COLOR).pack(side="left")
+        
+        # PV lines display area
+        self.analysis_text = tk.Text(self.analysis_frame, height=4, width=70, 
+                                     bg="#3A3836", fg="#CCC", font=("Consolas", 9),
+                                     state="disabled", relief="flat", wrap="none")
+        self.analysis_text.pack(fill="x", padx=5, pady=2)
+        
+        # Configure text tags for styling
+        self.analysis_text.tag_configure("depth", foreground="#888")
+        self.analysis_text.tag_configure("score_good", foreground="#81B64C")
+        self.analysis_text.tag_configure("score_bad", foreground="#E74C3C")
+        self.analysis_text.tag_configure("score_equal", foreground="#AAA")
+        self.analysis_text.tag_configure("moves", foreground="#FFF")
+        self.analysis_text.tag_configure("line1", foreground="#FFD700")  # Gold for best line
+        
+        # Initially hide analysis panel
+        self.analysis_frame.pack_forget()
+        
         # Vertical Evaluation Bar (between board and sidebar)
         self.eval_bar_frame = tk.Frame(frame, bg=self.BG_COLOR)
         self.eval_bar_frame.pack(side="left", fill="y", padx=(5, 10), pady=30)
@@ -651,28 +688,52 @@ class ChessApp:
         dialog.transient(self.root)
         dialog.grab_set()
         
-        dialog.geometry("280x150")
+        dialog.geometry("320x250")
         dialog.update_idletasks()
         x = self.root.winfo_x() + (self.root.winfo_width() // 2) - (dialog.winfo_width() // 2)
         y = self.root.winfo_y() + (self.root.winfo_height() // 2) - (dialog.winfo_height() // 2)
         dialog.geometry(f"+{x}+{y}")
         
-        # Temporary variable
+        # Temporary variables
         temp_show_eval = tk.BooleanVar(value=self.show_evaluation.get())
+        temp_show_analysis = tk.BooleanVar(value=self.show_analysis.get())
+        temp_analysis_lines = tk.IntVar(value=self.analysis_lines.get())
         
         ttk.Label(dialog, text="Game Settings", font=("Arial", 12, "bold")).pack(pady=(15, 15))
         
         # Show evaluation toggle
         eval_frame = ttk.Frame(dialog)
-        eval_frame.pack(fill="x", padx=20, pady=10)
-        ttk.Checkbutton(eval_frame, text="Show Evaluation", variable=temp_show_eval,
+        eval_frame.pack(fill="x", padx=20, pady=5)
+        ttk.Checkbutton(eval_frame, text="Show Evaluation Bar", variable=temp_show_eval,
                         bootstyle="success-round-toggle").pack(anchor="w")
         
+        # Show analysis toggle
+        analysis_frame = ttk.Frame(dialog)
+        analysis_frame.pack(fill="x", padx=20, pady=5)
+        ttk.Checkbutton(analysis_frame, text="Show Stockfish Analysis", variable=temp_show_analysis,
+                        bootstyle="info-round-toggle").pack(anchor="w")
+        
+        # Analysis lines slider
+        lines_frame = ttk.Frame(dialog)
+        lines_frame.pack(fill="x", padx=20, pady=8)
+        ttk.Label(lines_frame, text="Analysis Lines:").pack(side="left")
+        lines_val_label = ttk.Label(lines_frame, text=str(temp_analysis_lines.get()), width=2)
+        lines_val_label.pack(side="right")
+        lines_scale = ttk.Scale(lines_frame, from_=1, to=5, variable=temp_analysis_lines,
+                                bootstyle="info", length=100,
+                                command=lambda v: lines_val_label.config(text=str(int(float(v)))))
+        lines_scale.pack(side="right", padx=5)
+        
         def apply_and_close():
-            # Only trigger toggle if value changed
+            # Apply eval display changes
             if temp_show_eval.get() != self.show_evaluation.get():
                 self.show_evaluation.set(temp_show_eval.get())
                 self._toggle_eval_display()
+            # Apply analysis changes
+            if temp_show_analysis.get() != self.show_analysis.get():
+                self.show_analysis.set(temp_show_analysis.get())
+                self._toggle_analysis_display()
+            self.analysis_lines.set(int(temp_analysis_lines.get()))
             dialog.destroy()
         
         ttk.Button(dialog, text="OK", command=apply_and_close, 
@@ -695,6 +756,182 @@ class ChessApp:
             self.eval_bar_frame.pack_forget()
             # Stop eval engine
             self._stop_eval_engine()
+    
+    def _toggle_analysis_display(self):
+        """Toggle multi-PV analysis panel visibility."""
+        if self.show_analysis.get():
+            # Show analysis panel below board
+            self.analysis_frame.pack(fill="x", pady=(5, 0))
+            # Start analysis engine
+            self._start_analysis_engine()
+            # Request analysis
+            self._request_analysis()
+        else:
+            # Hide analysis panel
+            self.analysis_frame.pack_forget()
+            # Stop analysis
+            self._stop_analysis()
+    
+    def _start_analysis_engine(self):
+        """Start dedicated Stockfish engine for multi-PV analysis."""
+        if self.analysis_engine is None:
+            # Use stockfish-avx2 for best performance
+            analysis_path = os.path.join(ENGINES_DIR, "stockfish-avx2.exe")
+            if not os.path.exists(analysis_path):
+                analysis_path = os.path.join(ENGINES_DIR, "stockfish-windows-x86-64-avx2.exe")
+            if os.path.exists(analysis_path):
+                self.analysis_engine = UCIEngine(analysis_path, "AnalysisEngine")
+                self.analysis_engine.set_option("Use NNUE", "true")
+                self.analysis_engine.set_option("Threads", "2")  # Use 2 threads for analysis
+                self.analysis_engine.set_option("MultiPV", str(self.analysis_lines.get()))
+                self.analysis_engine.new_game()
+                self.analysis_running = True
+            else:
+                print(f"Analysis engine not found: {analysis_path}")
+    
+    def _stop_analysis(self):
+        """Stop the analysis engine."""
+        self.analysis_running = False
+        if self.analysis_engine:
+            try:
+                self.analysis_engine._send("stop")
+            except:
+                pass
+            self.analysis_engine.quit()
+            self.analysis_engine = None
+        self.analysis_arrows = []
+    
+    def _request_analysis(self):
+        """Request multi-PV analysis from analysis engine."""
+        if not self.show_analysis.get() or not self.analysis_engine:
+            return
+        
+        def analyze():
+            if not self.analysis_engine or not self.game_running:
+                return
+            
+            fen = self.board.fen()
+            num_lines = self.analysis_lines.get()
+            
+            # Update MultiPV setting
+            self.analysis_engine.set_option("MultiPV", str(num_lines))
+            self.analysis_engine._send(f"position fen {fen}")
+            self.analysis_engine._send("go infinite")
+            
+            # Collect PV data for each line
+            pv_data = {}  # {multipv_number: (score, depth, pv_moves)}
+            
+            while self.analysis_running and self.game_running:
+                line = self.analysis_engine._get_line(timeout=0.2)
+                if line:
+                    if "info" in line and "pv" in line:
+                        parts = line.split()
+                        try:
+                            # Extract depth
+                            depth = 0
+                            if "depth" in parts:
+                                depth_idx = parts.index("depth") + 1
+                                depth = int(parts[depth_idx])
+                            
+                            # Extract multipv number
+                            multipv = 1
+                            if "multipv" in parts:
+                                multipv_idx = parts.index("multipv") + 1
+                                multipv = int(parts[multipv_idx])
+                            
+                            # Extract score
+                            score_cp = 0
+                            score_mate = None
+                            if "score" in parts:
+                                score_idx = parts.index("score") + 1
+                                if parts[score_idx] == "cp":
+                                    score_cp = int(parts[score_idx + 1])
+                                elif parts[score_idx] == "mate":
+                                    score_mate = int(parts[score_idx + 1])
+                            
+                            # Extract PV moves
+                            pv_idx = parts.index("pv") + 1
+                            pv_moves = parts[pv_idx:pv_idx + 8]  # First 8 moves
+                            
+                            # Store this line's data
+                            pv_data[multipv] = (score_cp, score_mate, depth, pv_moves)
+                            
+                            # Update display every time we get new data
+                            if multipv <= num_lines:
+                                self.analysis_pv_data = [pv_data.get(i, (0, None, 0, [])) for i in range(1, num_lines + 1)]
+                                self.root.after(0, lambda: self._update_analysis_display(depth))
+                        except (ValueError, IndexError):
+                            pass
+                    elif line.startswith("bestmove"):
+                        break
+        
+        threading.Thread(target=analyze, daemon=True).start()
+    
+    def _update_analysis_display(self, current_depth):
+        """Update the analysis panel with current PV lines."""
+        self.analysis_text.config(state="normal")
+        self.analysis_text.delete("1.0", "end")
+        
+        is_white_to_move = self.board.turn == chess.WHITE
+        arrows = []
+        
+        for i, (score_cp, score_mate, depth, pv_moves) in enumerate(self.analysis_pv_data):
+            if not pv_moves:
+                continue
+            
+            # Format score
+            if score_mate is not None:
+                if score_mate > 0:
+                    score_str = f"M{score_mate}"
+                    score_tag = "score_good"
+                else:
+                    score_str = f"M{score_mate}"
+                    score_tag = "score_bad"
+            else:
+                # Adjust for perspective
+                display_score = score_cp if is_white_to_move else -score_cp
+                score_str = f"{display_score/100:+.2f}"
+                if display_score > 50:
+                    score_tag = "score_good"
+                elif display_score < -50:
+                    score_tag = "score_bad"
+                else:
+                    score_tag = "score_equal"
+            
+            # Convert UCI moves to SAN for display
+            san_moves = []
+            temp_board = self.board.copy()
+            for uci in pv_moves:
+                try:
+                    move = temp_board.parse_uci(uci)
+                    san_moves.append(temp_board.san(move))
+                    temp_board.push(move)
+                except:
+                    san_moves.append(uci)
+            
+            # Build line text
+            line_text = f"{i+1}. [{score_str:>7}] d{depth:>2}  "
+            moves_text = " ".join(san_moves[:6])  # First 6 moves
+            
+            # Insert with tags
+            self.analysis_text.insert("end", line_text, "depth")
+            tag = "line1" if i == 0 else "moves"
+            self.analysis_text.insert("end", moves_text + "\n", tag)
+            
+            # Add arrow for this line's first move
+            if pv_moves:
+                try:
+                    move = chess.Move.from_uci(pv_moves[0])
+                    color = "#22AA22" if i == 0 else "#CCCC22"  # Green for best, yellow for alt
+                    arrows.append((move.from_square, move.to_square, color))
+                except:
+                    pass
+        
+        self.analysis_text.config(state="disabled")
+        
+        # Store arrows and redraw board
+        self.analysis_arrows = arrows
+        self._update_board()
     
     def _start_eval_engine(self):
         """Start dedicated Stockfish engine for evaluation."""

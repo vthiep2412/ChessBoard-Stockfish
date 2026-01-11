@@ -28,15 +28,9 @@ except ImportError:
     sys.exit(1)
 
 # ============================================
-# Test Positions
+# Test Positions - Complex positions requiring actual search (no book moves!)
 # ============================================
 TEST_POSITIONS = [
-    # Starting position
-    ("startpos", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
-    
-    # Sicilian Defense
-    ("sicilian", "r1bqkbnr/pp1ppppp/2n5/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"),
-    
     # Complex middlegame (Kasparov vs Topalov)
     ("kasparov_topalov", "1rr3k1/4ppbp/2n3p1/2P5/p1BP4/P3P1P1/1B3P1P/3R1RK1 w - - 0 1"),
     
@@ -48,6 +42,42 @@ TEST_POSITIONS = [
     
     # Kiwipete (complex position for testing)
     ("kiwipete", "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"),
+    
+    # WAC.001 - Famous "Win At Chess" test suite position
+    ("wac_001", "2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 1"),
+    
+    # Sharp tactical - Italian Game
+    ("italian_sharp", "r1bqk2r/pppp1ppp/2n2n2/2b1p1N1/2B1P3/8/PPPP1PPP/RNBQK2R w KQkq - 4 5"),
+    
+    # Middlegame - Ruy Lopez
+    ("ruy_middle", "r1bqk2r/1ppp1ppp/p1n2n2/4p3/BbP1P3/5N2/PP1P1PPP/RNBQK2R w KQkq - 0 6"),
+    
+    # Complex Queen's Gambit
+    ("qgd_complex", "r1bqkb1r/pp3ppp/2n1pn2/2ppP3/3P4/2N2N2/PPP2PPP/R1BQKB1R w KQkq - 0 6"),
+    
+    # Tactical shot - pins and forks
+    ("tactical_pins", "r2qkb1r/1p1n1ppp/p2pbn2/4p3/4P3/1NN1B3/PPP1BPPP/R2QK2R w KQkq - 2 9"),
+    
+    # Endgame - Rook vs pawns
+    ("endgame_rook", "8/5pk1/6p1/8/5P2/6P1/5K2/8 w - - 0 1"),
+    
+    # Pawn structure - isolated queen pawn
+    ("isolated_qp", "r1bqkb1r/pp3ppp/2n1pn2/3pP3/3P4/P1N2N2/1P3PPP/R1BQKB1R w KQkq - 0 8"),
+    
+    # Complex tactics - discovered attack
+    ("discovered", "r1b1k2r/ppppqppp/2n2n2/4p3/1bB1P3/2N2N2/PPPP1PPP/R1BQK2R w KQkq - 6 6"),
+    
+    # Closed Rook endgame  
+    ("rook_endgame", "8/8/4k3/8/2p5/2P2K2/8/8 w - - 0 1"),
+    
+    # Double-edged middlegame
+    ("double_edged", "r1bq1rk1/1pp2ppp/p1np1n2/2b1p3/2B1P3/2NP1N2/PPPQ1PPP/R1B2RK1 w - - 0 9"),
+    
+    # King safety test
+    ("king_exposed", "r1bq1rk1/pppp1ppp/5n2/2b5/2B1P3/5Q2/PPPP1PPP/RNB1K2R w KQ - 6 6"),
+    
+    # Endgame - knight vs pawns
+    ("knight_endgame", "8/8/4k3/2N5/2p5/2P2K2/8/8 w - - 0 1"),
 ]
 
 # ============================================
@@ -56,11 +86,26 @@ TEST_POSITIONS = [
 
 def benchmark_position(name: str, fen: str, depth: int = 10) -> dict:
     """Benchmark a single position at given depth"""
-    print(f"  Testing: {name} @ depth {depth}...")
+    print(f"  Testing: {name} @ depth {depth}...", flush=True)
+    print(f"    [DEBUG] FEN: {fen}", flush=True)
+    print(f"    [DEBUG] Calling rust_engine.get_best_move()...", flush=True)
+    sys.stdout.flush()
     
     start = time.perf_counter()
-    best_move = rust_engine.get_best_move(fen, depth, 5, False)  # aggressiveness=5, parallel=False
+    try:
+        # Keep debug OFF for performance (set to True only when debugging hangs)
+        try:
+            rust_engine.set_debug(False)
+        except:
+            pass
+        
+        best_move = rust_engine.get_best_move(fen, depth, 5, False)  # aggressiveness=5, parallel=False
+    except Exception as e:
+        print(f"    [ERROR] Exception: {e}", flush=True)
+        return {"name": name, "error": str(e)}
+    
     elapsed = time.perf_counter() - start
+    print(f"    [DEBUG] Returned in {elapsed:.2f}s: {best_move}", flush=True)
     
     # Get node counts from the search
     nodes, qnodes = rust_engine.get_node_counts()
@@ -172,24 +217,38 @@ def run_nps_test(depth: int = 12) -> None:
     results = []
     quality_hits = 0
     quality_total = 0
+    quality_score = 0  # Weighted score: Top1=5, Top2=4, Top3=3, Top4=2, Top5=1
+    max_quality_score = 0
     
     for name, fen in TEST_POSITIONS:
         result = benchmark_position(name, fen, depth)
         results.append(result)
+        
+        # Skip positions that had errors
+        if "error" in result:
+            print(f"    [SKIP] {name}: {result['error']}")
+            continue
+            
         total_time += result["time_ms"]
         
         # Get Stockfish's top 5 moves for comparison
         sf_moves = get_stockfish_top_moves(fen, depth=12, num_moves=5)
         our_move = result['best_move']
         
-        # Check if our move is in Stockfish's top 5
-        in_top5 = our_move in sf_moves if sf_moves else False
-        quality_total += 1
-        if in_top5:
+        # Check position in Stockfish's ranking
+        max_quality_score += 5  # Max possible score
+        if our_move in sf_moves:
+            position = sf_moves.index(our_move) + 1  # 1-indexed
+            points = 6 - position  # Top1=5, Top2=4, Top3=3, Top4=2, Top5=1
+            quality_score += points
             quality_hits += 1
-            quality_mark = "✓"
+            quality_mark = f"★{position}"  # Show ranking
         else:
+            position = 0
+            points = 0
             quality_mark = "✗"
+        
+        quality_total += 1
         
         # Format NPS for display
         nps_str = f"{result['nps']/1000:.0f}k" if result['nps'] < 1000000 else f"{result['nps']/1000000:.1f}M"
@@ -197,12 +256,32 @@ def run_nps_test(depth: int = 12) -> None:
         
         sf_display = ", ".join(sf_moves[:3]) if sf_moves else "?"
         
-        print(f"    [{quality_mark}] {our_move:6s} {result['time_ms']:8.1f}ms  {nodes_str:>6s} nodes  {nps_str:>5s}/s  SF:[{sf_display}]")
+        print(f"    [{quality_mark:3s}] {our_move:6s} {result['time_ms']:8.1f}ms  {nodes_str:>6s} nodes  {nps_str:>5s}/s  SF:[{sf_display}]")
     
     print("-"*50)
     print(f"  Total time: {total_time:.1f}ms for {len(TEST_POSITIONS)} positions")
     print(f"  Average: {total_time/len(TEST_POSITIONS):.1f}ms per position")
     print(f"  Move Quality: {quality_hits}/{quality_total} in Stockfish top 5")
+    
+    # Quality score rating
+    quality_pct = (quality_score / max_quality_score) * 100 if max_quality_score > 0 else 0
+    print(f"  Quality Score: {quality_score}/{max_quality_score} ({quality_pct:.1f}%)")
+    
+    # Rating based on score
+    if quality_pct >= 90:
+        rating = "★★★★★ GRANDMASTER"
+    elif quality_pct >= 80:
+        rating = "★★★★☆ MASTER"
+    elif quality_pct >= 70:
+        rating = "★★★☆☆ EXPERT"
+    elif quality_pct >= 60:
+        rating = "★★☆☆☆ ADVANCED"
+    elif quality_pct >= 50:
+        rating = "★☆☆☆☆ INTERMEDIATE"
+    else:
+        rating = "☆☆☆☆☆ BEGINNER"
+    
+    print(f"  Rating: {rating}")
     
     if quality_hits < quality_total // 2:
         print("  ⚠ WARNING: Less than 50% of moves match Stockfish top 5!")

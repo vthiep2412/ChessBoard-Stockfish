@@ -1,7 +1,201 @@
 //! PeSTO Piece-Square Tables and Evaluation
 //! Ported from the Python implementation
 
-use chess::{Board, Color, Piece, Square, ALL_SQUARES};
+use chess::{Board, Color, Piece, Square, ALL_SQUARES, ChessMove};
+
+// ============================================================================
+// INCREMENTAL EVALUATION STATE
+// Tracks MG/EG scores and game phase, updated incrementally on each move
+// ============================================================================
+
+/// Incremental evaluation state - tracks scores through search
+#[derive(Clone, Copy, Default, Debug)]
+pub struct EvalState {
+    pub mg_score: i32,  // Middlegame material + PST (from White's perspective)
+    pub eg_score: i32,  // Endgame material + PST (from White's perspective)
+    pub phase: i32,     // Game phase (0-24)
+}
+
+impl EvalState {
+    /// Create initial eval state from board
+    pub fn new(board: &Board) -> Self {
+        let mut mg = 0i32;
+        let mut eg = 0i32;
+        
+        let white = board.color_combined(Color::White);
+        let black = board.color_combined(Color::Black);
+        
+        // Calculate MG/EG scores for all pieces
+        for piece in [Piece::Pawn, Piece::Knight, Piece::Bishop, Piece::Rook, Piece::Queen, Piece::King] {
+            let piece_bb = board.pieces(piece);
+            
+            for sq in piece_bb & white {
+                let (pmg, peg) = piece_value_raw(piece, sq, true);
+                mg += pmg;
+                eg += peg;
+            }
+            
+            for sq in piece_bb & black {
+                let (pmg, peg) = piece_value_raw(piece, sq, false);
+                mg -= pmg;
+                eg -= peg;
+            }
+        }
+        
+        // Calculate phase
+        let knights = board.pieces(Piece::Knight).popcnt() as i32;
+        let bishops = board.pieces(Piece::Bishop).popcnt() as i32;
+        let rooks = board.pieces(Piece::Rook).popcnt() as i32;
+        let queens = board.pieces(Piece::Queen).popcnt() as i32;
+        let phase = (knights + bishops + rooks * 2 + queens * 4).min(24);
+        
+        Self { mg_score: mg, eg_score: eg, phase }
+    }
+    
+    /// Apply a move to update scores incrementally
+    /// MUST be called BEFORE make_move on board!
+    #[inline]
+    pub fn apply_move(&mut self, board: &Board, mv: ChessMove) {
+        let from = mv.get_source();
+        let to = mv.get_dest();
+        let is_white = board.side_to_move() == Color::White;
+        
+        // Get the moving piece
+        if let Some(piece) = board.piece_on(from) {
+            // Remove piece from source square
+            let (mg_from, eg_from) = piece_value_raw(piece, from, is_white);
+            // Add piece to destination square
+            let (mg_to, eg_to) = piece_value_raw(piece, to, is_white);
+            
+            let delta_mg = mg_to - mg_from;
+            let delta_eg = eg_to - eg_from;
+            
+            if is_white {
+                self.mg_score += delta_mg;
+                self.eg_score += delta_eg;
+            } else {
+                self.mg_score -= delta_mg;
+                self.eg_score -= delta_eg;
+            }
+            
+            // Handle captures
+            if let Some(captured) = board.piece_on(to) {
+                let (cap_mg, cap_eg) = piece_value_raw(captured, to, !is_white);
+                if is_white {
+                    self.mg_score += cap_mg;
+                    self.eg_score += cap_eg;
+                } else {
+                    self.mg_score -= cap_mg;
+                    self.eg_score -= cap_eg;
+                }
+                
+                // Update phase for captured piece
+                self.phase -= match captured {
+                    Piece::Knight | Piece::Bishop => 1,
+                    Piece::Rook => 2,
+                    Piece::Queen => 4,
+                    _ => 0,
+                };
+                self.phase = self.phase.max(0);
+            }
+            
+            // Handle en passant
+            if piece == Piece::Pawn && board.en_passant() == Some(to) {
+                // Captured pawn is on a different square
+                let cap_sq = if is_white {
+                    Square::make_square(chess::Rank::Fifth, to.get_file())
+                } else {
+                    Square::make_square(chess::Rank::Fourth, to.get_file())
+                };
+                let (cap_mg, cap_eg) = piece_value_raw(Piece::Pawn, cap_sq, !is_white);
+                if is_white {
+                    self.mg_score += cap_mg;
+                    self.eg_score += cap_eg;
+                } else {
+                    self.mg_score -= cap_mg;
+                    self.eg_score -= cap_eg;
+                }
+            }
+            
+            // Handle promotions
+            if let Some(promo) = mv.get_promotion() {
+                // Remove pawn value, add promoted piece value
+                let (pawn_mg, pawn_eg) = piece_value_raw(Piece::Pawn, to, is_white);
+                let (promo_mg, promo_eg) = piece_value_raw(promo, to, is_white);
+                
+                let delta_mg = promo_mg - pawn_mg;
+                let delta_eg = promo_eg - pawn_eg;
+                
+                if is_white {
+                    self.mg_score += delta_mg;
+                    self.eg_score += delta_eg;
+                } else {
+                    self.mg_score -= delta_mg;
+                    self.eg_score -= delta_eg;
+                }
+                
+                // Update phase for promotion
+                self.phase += match promo {
+                    Piece::Knight | Piece::Bishop => 1,
+                    Piece::Rook => 2,
+                    Piece::Queen => 4,
+                    _ => 0,
+                };
+                self.phase = self.phase.min(24);
+            }
+            
+            // Handle castling (king already moved, need to move rook)
+            if piece == Piece::King {
+                let from_file = from.get_file().to_index();
+                let to_file = to.get_file().to_index();
+                
+                // Kingside castle
+                if from_file == 4 && to_file == 6 {
+                    let rook_from = Square::make_square(from.get_rank(), chess::File::H);
+                    let rook_to = Square::make_square(from.get_rank(), chess::File::F);
+                    let (rf_mg, rf_eg) = piece_value_raw(Piece::Rook, rook_from, is_white);
+                    let (rt_mg, rt_eg) = piece_value_raw(Piece::Rook, rook_to, is_white);
+                    
+                    if is_white {
+                        self.mg_score += rt_mg - rf_mg;
+                        self.eg_score += rt_eg - rf_eg;
+                    } else {
+                        self.mg_score -= rt_mg - rf_mg;
+                        self.eg_score -= rt_eg - rf_eg;
+                    }
+                }
+                // Queenside castle
+                else if from_file == 4 && to_file == 2 {
+                    let rook_from = Square::make_square(from.get_rank(), chess::File::A);
+                    let rook_to = Square::make_square(from.get_rank(), chess::File::D);
+                    let (rf_mg, rf_eg) = piece_value_raw(Piece::Rook, rook_from, is_white);
+                    let (rt_mg, rt_eg) = piece_value_raw(Piece::Rook, rook_to, is_white);
+                    
+                    if is_white {
+                        self.mg_score += rt_mg - rf_mg;
+                        self.eg_score += rt_eg - rf_eg;
+                    } else {
+                        self.mg_score -= rt_mg - rf_mg;
+                        self.eg_score -= rt_eg - rf_eg;
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Get tapered score from side-to-move perspective
+    #[inline]
+    pub fn score(&self, side_to_move: Color) -> i32 {
+        let raw = (self.mg_score * self.phase + self.eg_score * (24 - self.phase)) / 24;
+        if side_to_move == Color::White { raw } else { -raw }
+    }
+}
+
+/// Raw piece value without side-to-move adjustment (for incremental updates)
+#[inline]
+fn piece_value_raw(piece: Piece, sq: Square, is_white: bool) -> (i32, i32) {
+    piece_value(piece, sq, is_white)
+}
 
 // Material values (middlegame)
 const PAWN_MG: i32 = 82;
@@ -171,6 +365,74 @@ fn piece_value(piece: Piece, sq: Square, is_white: bool) -> (i32, i32) {
         Piece::Queen => (QUEEN_MG + MG_QUEEN[idx], QUEEN_EG + EG_QUEEN[idx]),
         Piece::King => (MG_KING[idx], EG_KING[idx]),
     }
+}
+// ============================================================================
+// QUADRATIC IMBALANCE TABLES
+// Piece values change based on what other pieces are on the board
+// Based on Stockfish's approach (simplified)
+// ============================================================================
+
+/// Own piece count adjustments for each piece type
+/// OWN_IMBALANCE[piece_type][other_piece_type] 
+/// e.g., Having 2 bishops (bishop pair) gets a bonus
+const OWN_IMBALANCE: [[i32; 5]; 5] = [
+    //  Pawn  Knight  Bishop  Rook   Queen
+    [   0,      0,      0,      0,      0],  // Pawn
+    [   0,     -5,     -2,      0,      0],  // Knight (2 knights = penalty)
+    [   3,      5,     25,      0,      0],  // Bishop (bishop pair = big bonus!)
+    [  -3,      0,      0,     -5,      0],  // Rook
+    [   0,      0,      0,      0,      0],  // Queen
+];
+
+/// Opponent piece count adjustments
+/// OPP_IMBALANCE[our_piece][opponent_piece]
+/// e.g., Knights gain value when opponent has many pawns
+const OPP_IMBALANCE: [[i32; 5]; 5] = [
+    //  Pawn  Knight  Bishop  Rook   Queen  
+    [   0,      0,      0,      0,      0],  // vs Pawn
+    [   2,      0,      0,      3,      0],  // Knight vs opponent (good vs pawns, rooks)
+    [   0,      3,      0,      2,      0],  // Bishop vs opponent
+    [   0,      3,      2,      0,      0],  // Rook vs opponent
+    [   0,      0,      0,      0,      0],  // Queen vs opponent
+];
+
+/// Evaluate material imbalance
+/// Returns score in centipawns (positive = white advantage)
+fn evaluate_imbalance(board: &Board) -> i32 {
+    let white = board.color_combined(Color::White);
+    let black = board.color_combined(Color::Black);
+    
+    // Count pieces for each side
+    let pieces = [Piece::Pawn, Piece::Knight, Piece::Bishop, Piece::Rook, Piece::Queen];
+    
+    let mut white_counts = [0i32; 5];
+    let mut black_counts = [0i32; 5];
+    
+    for (i, &piece) in pieces.iter().enumerate() {
+        white_counts[i] = (board.pieces(piece) & white).popcnt() as i32;
+        black_counts[i] = (board.pieces(piece) & black).popcnt() as i32;
+    }
+    
+    let mut white_score = 0;
+    let mut black_score = 0;
+    
+    // Calculate imbalance bonuses for each piece type
+    for i in 0..5 {
+        // Own piece interactions
+        for j in 0..5 {
+            white_score += white_counts[i] * white_counts[j] * OWN_IMBALANCE[i][j];
+            black_score += black_counts[i] * black_counts[j] * OWN_IMBALANCE[i][j];
+        }
+        
+        // Opponent piece interactions
+        for j in 0..5 {
+            white_score += white_counts[i] * black_counts[j] * OPP_IMBALANCE[i][j];
+            black_score += black_counts[i] * white_counts[j] * OPP_IMBALANCE[i][j];
+        }
+    }
+    
+    // Divide by 16 to scale (values accumulate quadratically)
+    (white_score - black_score) / 16
 }
 
 /// Calculate game phase (0 = endgame, 24 = opening)
@@ -379,14 +641,94 @@ fn evaluate_pieces(board: &Board) -> (i32, i32) {
     (white_score, black_score)
 }
 
-/// Evaluate a position using tapered PeSTO evaluation + positional features
-/// Returns score in centipawns from White's perspective
+/// Evaluate piece mobility - counts safe squares each piece can move to
+/// Returns (white_mobility, black_mobility) in centipawns
+/// Based on Stockfish 11 weights: Knight ~4cp/sq, Bishop ~5cp/sq, Rook ~2cp/sq, Queen ~1cp/sq
+fn evaluate_mobility(board: &Board) -> (i32, i32) {
+    use chess::{get_knight_moves, get_bishop_moves, get_rook_moves, EMPTY, BitBoard};
+    
+    let mut white_score = 0i32;
+    let mut black_score = 0i32;
+    
+    let white_pieces = board.color_combined(Color::White);
+    let black_pieces = board.color_combined(Color::Black);
+    let all_pieces = board.combined();
+    
+    // Squares attacked by enemy pawns are NOT safe
+    let white_pawns = board.pieces(Piece::Pawn) & white_pieces;
+    let black_pawns = board.pieces(Piece::Pawn) & black_pieces;
+    
+    // Pawn attack masks (simplified - left and right captures)
+    let white_pawn_attacks = ((white_pawns.0 << 7) & 0xfefefefefefefefe) | 
+                              ((white_pawns.0 << 9) & 0x7f7f7f7f7f7f7f7f);
+    let black_pawn_attacks = ((black_pawns.0 >> 7) & 0x7f7f7f7f7f7f7f7f) | 
+                              ((black_pawns.0 >> 9) & 0xfefefefefefefefe);
+    
+    // Safe squares for each side (not attacked by enemy pawns, not blocked by own pieces)
+    let white_safe = !(BitBoard(black_pawn_attacks) | white_pieces);
+    let black_safe = !(BitBoard(white_pawn_attacks) | black_pieces);
+    
+    // Knight mobility (~4 cp per square)
+    for sq in board.pieces(Piece::Knight) & white_pieces {
+        let attacks = get_knight_moves(sq);
+        let safe_moves = (attacks & white_safe).popcnt() as i32;
+        white_score += safe_moves * 4;
+    }
+    for sq in board.pieces(Piece::Knight) & black_pieces {
+        let attacks = get_knight_moves(sq);
+        let safe_moves = (attacks & black_safe).popcnt() as i32;
+        black_score += safe_moves * 4;
+    }
+    
+    // Bishop mobility (~5 cp per square)
+    for sq in board.pieces(Piece::Bishop) & white_pieces {
+        let attacks = get_bishop_moves(sq, *all_pieces);
+        let safe_moves = (attacks & white_safe).popcnt() as i32;
+        white_score += safe_moves * 5;
+    }
+    for sq in board.pieces(Piece::Bishop) & black_pieces {
+        let attacks = get_bishop_moves(sq, *all_pieces);
+        let safe_moves = (attacks & black_safe).popcnt() as i32;
+        black_score += safe_moves * 5;
+    }
+    
+    // Rook mobility (~2 cp per square)
+    for sq in board.pieces(Piece::Rook) & white_pieces {
+        let attacks = get_rook_moves(sq, *all_pieces);
+        let safe_moves = (attacks & white_safe).popcnt() as i32;
+        white_score += safe_moves * 2;
+    }
+    for sq in board.pieces(Piece::Rook) & black_pieces {
+        let attacks = get_rook_moves(sq, *all_pieces);
+        let safe_moves = (attacks & black_safe).popcnt() as i32;
+        black_score += safe_moves * 2;
+    }
+    
+    // Queen mobility (~1 cp per square, less weight as queens are naturally mobile)
+    for sq in board.pieces(Piece::Queen) & white_pieces {
+        let attacks = get_bishop_moves(sq, *all_pieces) | get_rook_moves(sq, *all_pieces);
+        let safe_moves = (attacks & white_safe).popcnt() as i32;
+        white_score += safe_moves * 1;
+    }
+    for sq in board.pieces(Piece::Queen) & black_pieces {
+        let attacks = get_bishop_moves(sq, *all_pieces) | get_rook_moves(sq, *all_pieces);
+        let safe_moves = (attacks & black_safe).popcnt() as i32;
+        black_score += safe_moves * 1;
+    }
+    
+    (white_score, black_score)
+}
+
+/// Lazy evaluation margin - skip expensive terms if score far from window
+const LAZY_MARGIN: i32 = 300; // ~3 pawns - tune this!
+
+/// Fast evaluation using only PeSTO + bishop pair (no expensive loops)
+/// Used for lazy eval cutoffs
 #[inline]
-pub fn evaluate(board: &Board) -> i32 {
+pub fn fast_evaluate(board: &Board) -> i32 {
     let mut mg_score = 0i32;
     let mut eg_score = 0i32;
     
-    // Iterate only over OCCUPIED squares using bitboards (much faster!)
     let white = board.color_combined(Color::White);
     let black = board.color_combined(Color::Black);
     
@@ -394,14 +736,12 @@ pub fn evaluate(board: &Board) -> i32 {
     for piece in [Piece::Pawn, Piece::Knight, Piece::Bishop, Piece::Rook, Piece::Queen, Piece::King] {
         let piece_bb = board.pieces(piece);
         
-        // White pieces
         for sq in piece_bb & white {
             let (mg, eg) = piece_value(piece, sq, true);
             mg_score += mg;
             eg_score += eg;
         }
         
-        // Black pieces  
         for sq in piece_bb & black {
             let (mg, eg) = piece_value(piece, sq, false);
             mg_score -= mg;
@@ -413,12 +753,8 @@ pub fn evaluate(board: &Board) -> i32 {
     let phase = game_phase(board);
     let mut score = (mg_score * phase + eg_score * (24 - phase)) / 24;
     
-    // Fast positional bonuses (no extra loops)
-    // Bishop pair bonus
-    let white_bishops = (board.pieces(Piece::Bishop) & white).popcnt();
-    let black_bishops = (board.pieces(Piece::Bishop) & black).popcnt();
-    if white_bishops >= 2 { score += 50; }
-    if black_bishops >= 2 { score -= 50; }
+    // Quadratic imbalance (includes bishop pair!)
+    score += evaluate_imbalance(board);
     
     // Return from side-to-move perspective
     if board.side_to_move() == Color::White {
@@ -428,40 +764,159 @@ pub fn evaluate(board: &Board) -> i32 {
     }
 }
 
-/// Check if a move is a capture
-#[inline(always)]
-pub fn is_capture(board: &Board, mv: chess::ChessMove) -> bool {
-    board.piece_on(mv.get_dest()).is_some()
+/// Full evaluation with all positional terms
+/// Returns score from side-to-move perspective
+#[inline]
+fn full_evaluate(board: &Board, base_score: i32) -> i32 {
+    let mut score = base_score;
+    
+    // Expensive terms - only compute when needed
+    let (white_pawn, black_pawn) = evaluate_pawn_structure(board);
+    let (white_king, black_king) = evaluate_king_safety(board);
+    let (white_mobility, black_mobility) = evaluate_mobility(board);
+    
+    let positional = (white_pawn - black_pawn) + (white_king - black_king) + (white_mobility - black_mobility);
+    
+    // Adjust score based on side to move
+    let mut final_score = if board.side_to_move() == Color::White {
+        score + positional
+    } else {
+        score - positional
+    };
+    
+    // ==========================================
+    // TEMPO BONUS - Reward having the move
+    // This encourages the engine to prefer positions where it has initiative
+    // ==========================================
+    final_score += 12; // Small tempo bonus for side to move
+    
+    // ==========================================
+    // CONTEMPT FACTOR - Avoid draws when ahead
+    // When we have material advantage, penalize drawish positions
+    // This makes the engine fight for wins instead of accepting draws
+    // ==========================================
+    let phase = game_phase(board);
+    
+    // If we're ahead, add contempt to avoid draws
+    // Contempt is stronger in middlegame (more chances to convert)
+    if final_score > 50 {
+        // We're winning - add contempt bonus to avoid lazy play
+        let contempt = (phase * 5) / 24; // 0-5 cp based on phase
+        final_score += contempt;
+    } else if final_score < -50 {
+        // We're losing - add contempt to fight harder (negative for opponent)
+        let contempt = (phase * 5) / 24;
+        final_score -= contempt;
+    }
+    
+    final_score
 }
 
-/// MVV-LVA score for move ordering
+/// Evaluate a position using tapered PeSTO evaluation + positional features
+/// Uses lazy evaluation: skips expensive terms if score far from alpha-beta window
+/// Returns score in centipawns from side-to-move perspective
+#[inline]
+pub fn evaluate(board: &Board) -> i32 {
+    // Fast path: compute base score
+    let base_score = fast_evaluate(board);
+    
+    // Full evaluation (no lazy cutoff when called without alpha/beta)
+    full_evaluate(board, base_score)
+}
+
+/// Lazy evaluation: skip expensive terms if score far from alpha-beta window
+/// This is the optimized version called from search with alpha/beta bounds
+#[inline]
+pub fn evaluate_lazy(board: &Board, alpha: i32, beta: i32) -> i32 {
+    // Fast path: compute base score
+    let base_score = fast_evaluate(board);
+    
+    // Lazy cutoff: if score is way outside window, skip expensive terms
+    if base_score + LAZY_MARGIN <= alpha {
+        return base_score; // Failing low - skip expensive eval
+    }
+    if base_score - LAZY_MARGIN >= beta {
+        return base_score; // Failing high - skip expensive eval  
+    }
+    
+    // Score is close to window - compute full evaluation
+    full_evaluate(board, base_score)
+}
+
+/// Incremental evaluation using pre-computed EvalState
+/// Uses lazy cutoffs like evaluate_lazy but with pre-computed base score
+#[inline]
+pub fn evaluate_with_state(board: &Board, state: &EvalState, alpha: i32, beta: i32) -> i32 {
+    // Use pre-computed base score from EvalState + imbalance
+    let base_score = state.score(board.side_to_move()) + evaluate_imbalance(board);
+    
+    // Lazy cutoff
+    if base_score + LAZY_MARGIN <= alpha {
+        return base_score;
+    }
+    if base_score - LAZY_MARGIN >= beta {
+        return base_score;
+    }
+    
+    // Compute full eval with expensive terms
+    full_evaluate(board, base_score)
+}
+
+/// Check if a move is a capture (includes en passant!)
+#[inline(always)]
+pub fn is_capture(board: &Board, mv: chess::ChessMove) -> bool {
+    // Normal capture: piece on destination
+    if board.piece_on(mv.get_dest()).is_some() {
+        return true;
+    }
+    // En passant: pawn moves diagonally to empty square (en passant target)
+    if let Some(ep_sq) = board.en_passant() {
+        if board.piece_on(mv.get_source()) == Some(Piece::Pawn) 
+           && mv.get_dest() == ep_sq {
+            return true;
+        }
+    }
+    false
+}
+
+/// MVV-LVA score for move ordering (handles en passant!)
 #[inline(always)]
 pub fn mvv_lva_score(board: &Board, mv: chess::ChessMove) -> i32 {
-    if let Some(victim) = board.piece_on(mv.get_dest()) {
-        let victim_val = match victim {
+    // Determine victim piece value
+    let victim_val = if let Some(victim) = board.piece_on(mv.get_dest()) {
+        match victim {
             Piece::Pawn => 100,
             Piece::Knight => 300,
             Piece::Bishop => 300,
             Piece::Rook => 500,
             Piece::Queen => 900,
             Piece::King => 0,
-        };
-        
-        let attacker = board.piece_on(mv.get_source()).unwrap();
-        let attacker_val = match attacker {
-            Piece::Pawn => 100,
-            Piece::Knight => 300,
-            Piece::Bishop => 300,
-            Piece::Rook => 500,
-            Piece::Queen => 900,
-            Piece::King => 0,
-        };
-        
-        // MVV-LVA: prioritize capturing high value with low value
-        victim_val * 10 - attacker_val + 10000
+        }
     } else {
-        0
-    }
+        // Check for en passant: pawn captures to en passant square
+        if let Some(ep_sq) = board.en_passant() {
+            if board.piece_on(mv.get_source()) == Some(Piece::Pawn) && mv.get_dest() == ep_sq {
+                100 // Capturing a pawn via en passant
+            } else {
+                return 0; // Not a capture
+            }
+        } else {
+            return 0; // Not a capture
+        }
+    };
+    
+    let attacker = board.piece_on(mv.get_source()).unwrap();
+    let attacker_val = match attacker {
+        Piece::Pawn => 100,
+        Piece::Knight => 300,
+        Piece::Bishop => 300,
+        Piece::Rook => 500,
+        Piece::Queen => 900,
+        Piece::King => 0,
+    };
+    
+    // MVV-LVA: prioritize capturing high value with low value
+    victim_val * 10 - attacker_val + 10000
 }
 
 /// Delta evaluation: Calculate score change for a move WITHOUT iterating all 64 squares
@@ -491,6 +946,24 @@ pub fn evaluate_delta(board: &Board, mv: chess::ChessMove) -> i32 {
         let (cap_mg, cap_eg) = piece_value(captured, to, !is_white);
         let cap_value = (cap_mg * phase + cap_eg * (24 - phase)) / 24;
         delta += cap_value; // We capture, so we gain
+    } else if piece == Piece::Pawn {
+        // CRITICAL: Handle en passant capture!
+        // En passant: pawn moves diagonally to empty square, captures pawn beside it
+        if let Some(ep_sq) = board.en_passant() {
+            if to == ep_sq {
+                // Captured pawn is on a different rank than destination
+                // White captures: pawn is on rank 5 (ep square is rank 6)  
+                // Black captures: pawn is on rank 4 (ep square is rank 3)
+                let captured_sq = if is_white {
+                    Square::make_square(chess::Rank::Fifth, to.get_file())
+                } else {
+                    Square::make_square(chess::Rank::Fourth, to.get_file())
+                };
+                let (cap_mg, cap_eg) = piece_value(Piece::Pawn, captured_sq, !is_white);
+                let cap_value = (cap_mg * phase + cap_eg * (24 - phase)) / 24;
+                delta += cap_value;
+            }
+        }
     }
     
     // Handle promotion
@@ -502,6 +975,8 @@ pub fn evaluate_delta(board: &Board, mv: chess::ChessMove) -> i32 {
         let promo_delta_eg = promo_eg - pawn_eg;
         delta += (promo_delta_mg * phase + promo_delta_eg * (24 - phase)) / 24;
     }
+    
+    // TODO: Handle castling rook movement for more accuracy
     
     delta
 }

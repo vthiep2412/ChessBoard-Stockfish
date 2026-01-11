@@ -55,8 +55,8 @@ def main():
                 try:
                     rust_engine.clear_tt()
                     log("New Game Ready - TT Cleared.")
-                except:
-                    log("New Game Ready (clear_tt not available).")
+                except Exception as e:
+                    log(f"New Game Ready (clear_tt failed: {e}).")
             
             elif line.startswith("position"):
                 parts = line.split()
@@ -104,15 +104,15 @@ def main():
                                 aggressiveness = int(config["aggressiveness"])
                             if "use_parallel" in config:
                                 use_parallel = config["use_parallel"]
-                    except:
-                        pass
+                    except Exception as e:
+                        log(f"Config load error: {e}")
 
                 parts = line.split()
                 if "depth" in parts and not override:
                     try:
                         depth = int(parts[parts.index("depth") + 1])
-                    except:
-                        pass
+                    except Exception as e:
+                        log(f"Depth parse error: {e}")
                 
                 # Call Rust engine!
                 try:

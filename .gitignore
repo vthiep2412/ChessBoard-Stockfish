@@ -30,4 +30,3 @@ Stockfish-master
 rust_engine/target/
 books/komodo.bin
 books/titans.bin
-.gitignore

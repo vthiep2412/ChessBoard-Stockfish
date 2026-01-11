@@ -1,0 +1,17 @@
+# Build artifacts
+target/
+*.pyd
+*.so
+Cargo.lock
+
+# Python
+__pycache__/
+*.pyc
+.eggs/
+*.egg-info/
+
+# Communication files (used for Gemini research partner)
+sendto*.md
+
+# Logs
+*.log
