@@ -370,6 +370,13 @@ fn quiescence(board: &Board, mut alpha: i32, beta: i32, ply: u8) -> i32 {
     captures.sort_by_key(|m| -eval::mvv_lva_score(board, *m));
     
     for mv in captures {
+        // SEE Pruning: Skip bad captures
+        // Unless it's a very valuable capture (Queen), pruning usually safe
+        // SEE < 0 means we lose material
+        if eval::see(board, mv) < 0 {
+            continue;
+        }
+
         // Delta pruning per move: skip captures that can't improve alpha
         let captured_value = match board.piece_on(mv.get_dest()) {
             Some(chess::Piece::Pawn) => 100,
@@ -531,6 +538,21 @@ fn negamax(
     let original_alpha = alpha;
     let mut moves_searched = 0;
     
+    // INTERNAL ITERATIVE DEEPENING (IID)
+    // If we have no TT move and depth is high, do a shallow search to get a best move hint
+    // This improves move ordering significantly at PV nodes
+    let mut tt_move = tt_move; // Make mutable for IID update
+    if tt_move.is_none() && depth >= 6 {
+         let iid_depth = depth - 2;
+         // We ignore result, just want to populate TT
+         let _ = negamax(board, eval_state, prev_move, iid_depth, alpha, beta, ply, null_ok);
+
+         // Re-probe TT to get the move we just found
+         if let Some((entry, _)) = tt_probe(hash) {
+             tt_move = decode_move(entry.best_move, board);
+         }
+    }
+
     // STAGE 1: Try TT move first (if valid and legal)
     if let Some(tt_mv) = tt_move {
         // Verify TT move is legal by checking if it's in legal moves
@@ -643,7 +665,16 @@ fn negamax(
         let score = if Some(*m) == killers[0] || Some(*m) == killers[1] {
             500_000 // Killer moves
         } else if eval::is_capture(board, *m) {
-            100_000 + eval::mvv_lva_score(board, *m)
+            // Use SEE to distinguish good/bad captures
+            let see = eval::see(board, *m);
+            if see >= 0 {
+                // Good capture: High priority (above killers)
+                // Base 2,000,000 + MVV-LVA + SEE
+                2_000_000 + eval::mvv_lva_score(board, *m) + see
+            } else {
+                // Bad capture: Low priority (below killers, but above bad quiets)
+                -100_000 + see // Negative score
+            }
         } else {
             // History heuristic + continuation history for quiet moves
             let from = m.get_source().to_index();
