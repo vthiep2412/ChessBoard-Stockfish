@@ -225,81 +225,6 @@ class UCIEngine:
             self.process = None
 
 # ==============================================================================
-# ANALYSIS ENGINE (Non-blocking)
-# ==============================================================================
-
-class AnalysisEngine:
-    """Dedicated engine wrapper for non-blocking analysis/evaluation."""
-    def __init__(self, path, callback):
-        self.path = path
-        self.callback = callback # Function to call with parsed info
-        self.process = None
-        self.running = False
-        self.lock = threading.Lock()
-
-        try:
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-
-            self.process = subprocess.Popen(
-                path,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,
-                startupinfo=startupinfo
-            )
-
-            self.running = True
-            threading.Thread(target=self._reader, daemon=True).start()
-
-            self.send("uci")
-            self.send("setoption name Threads value 2")
-            self.send("setoption name Use NNUE value true")
-            self.send("isready")
-        except Exception as e:
-            print(f"Failed to start analysis engine: {e}")
-
-    def send(self, cmd):
-        if self.process:
-            try:
-                with self.lock:
-                    self.process.stdin.write(cmd + "\n")
-                    self.process.stdin.flush()
-            except:
-                pass
-
-    def stop(self):
-        self.send("stop")
-
-    def quit(self):
-        self.running = False
-        self.send("quit")
-        if self.process:
-            try:
-                self.process.terminate()
-            except:
-                pass
-
-    def analyze(self, fen, multipv=1):
-        self.stop()
-        self.send(f"setoption name MultiPV value {multipv}")
-        self.send(f"position fen {fen}")
-        self.send("go infinite")
-
-    def _reader(self):
-        while self.running and self.process:
-            try:
-                line = self.process.stdout.readline()
-                if line:
-                    self.callback(line.strip())
-                elif self.process.poll() is not None:
-                    break
-            except:
-                break
-
-# ==============================================================================
 # MAIN CHESS APP
 # ==============================================================================
 
@@ -342,9 +267,10 @@ class ChessApp:
         
         # In-game settings (not saved)
         self.show_evaluation = tk.BooleanVar(value=False)
-        self.current_eval = 0.0  # Target evaluation value (Absolute White Perspective)
+        self.current_eval = 0.0  # Target evaluation value
         self.display_eval = 0.0  # Current displayed value (for animation)
         self.eval_engine = None  # Dedicated engine for evaluation
+        self.eval_depth = 18  # Depth for evaluation
         
         # Pondering state
         self.ponder_move = None
@@ -353,9 +279,10 @@ class ChessApp:
         # Multi-line analysis state
         self.analysis_lines = tk.IntVar(value=3)  # Number of PV lines to show
         self.show_analysis = tk.BooleanVar(value=False)  # Toggle analysis panel
-        self.analysis_pv_data = {}  # {multipv_id: (score, depth, pv_moves)}
+        self.analysis_pv_data = []  # List of (score, pv_moves) tuples
         self.analysis_arrows = []  # List of (from_sq, to_sq, color) for arrows
         self.analysis_engine = None  # Dedicated engine for multi-PV analysis
+        self.analysis_running = False  # Flag to control analysis thread
         
         # CvC move sync event
         self.cvc_move_done = threading.Event()
@@ -848,199 +775,240 @@ class ChessApp:
     def _start_analysis_engine(self):
         """Start dedicated Stockfish engine for multi-PV analysis."""
         if self.analysis_engine is None:
-            # Try to find a good engine
-            analysis_path = None
-            for name in ["stockfish-avx2.exe", "stockfish-windows-x86-64-avx2.exe", "stockfish.exe"]:
-                p = os.path.join(ENGINES_DIR, name)
-                if os.path.exists(p):
-                    analysis_path = p
-                    break
-
-            if analysis_path:
-                self.analysis_engine = AnalysisEngine(analysis_path, self._on_analysis_update)
+            # Use stockfish-avx2 for best performance
+            analysis_path = os.path.join(ENGINES_DIR, "stockfish-avx2.exe")
+            if not os.path.exists(analysis_path):
+                analysis_path = os.path.join(ENGINES_DIR, "stockfish-windows-x86-64-avx2.exe")
+            if os.path.exists(analysis_path):
+                self.analysis_engine = UCIEngine(analysis_path, "AnalysisEngine")
+                self.analysis_engine.set_option("Use NNUE", "true")
+                self.analysis_engine.set_option("Threads", "2")  # Use 2 threads for analysis
+                self.analysis_engine.set_option("MultiPV", str(self.analysis_lines.get()))
+                self.analysis_engine.new_game()
+                self.analysis_running = True
             else:
-                print("No analysis engine found!")
-
+                print(f"Analysis engine not found: {analysis_path}")
+    
     def _stop_analysis(self):
         """Stop the analysis engine."""
+        self.analysis_running = False
         if self.analysis_engine:
+            try:
+                self.analysis_engine._send("stop")
+            except:
+                pass
             self.analysis_engine.quit()
             self.analysis_engine = None
         self.analysis_arrows = []
-        self.analysis_pv_data = {}
-
+    
     def _request_analysis(self):
         """Request multi-PV analysis from analysis engine."""
-        should_run = (self.show_analysis.get() or self.show_evaluation.get())
-        if should_run and self.analysis_engine and self.game_running:
-            # If only eval bar is shown, use 1 line to save resources
-            multipv = self.analysis_lines.get() if self.show_analysis.get() else 1
-            self.analysis_engine.analyze(self.board.fen(), multipv=multipv)
-
-    def _on_analysis_update(self, line):
-        """Callback from AnalysisEngine thread."""
-        if "info" in line and "pv" in line:
-            # Parse info line
-            try:
-                parts = line.split()
-
-                # MultiPV ID
-                multipv = 1
-                if "multipv" in parts:
-                    multipv = int(parts[parts.index("multipv") + 1])
-
-                # Depth
-                depth = 0
-                if "depth" in parts:
-                    depth = int(parts[parts.index("depth") + 1])
-
-                # Score
-                score_cp = 0
-                score_mate = None
-                if "score" in parts:
-                    idx = parts.index("score")
-                    type_ = parts[idx+1]
-                    val = int(parts[idx+2])
-                    if type_ == "cp":
-                        score_cp = val
-                    elif type_ == "mate":
-                        score_mate = val
-
-                # PV
-                pv_idx = parts.index("pv") + 1
-                pv_moves = parts[pv_idx:]
-
-                # Store data
-                self.analysis_pv_data[multipv] = (score_cp, score_mate, depth, pv_moves)
-
-                # Snapshot for UI to avoid thread race conditions
-                data_snapshot = self.analysis_pv_data.copy()
-
-                # Update UI on main thread
-                self.root.after(0, lambda: self._render_analysis(data_snapshot))
-
-                # Update Eval Bar if this is the best line (multipv 1)
-                if multipv == 1:
-                    # Normalize score to White Perspective
-                    # UCI score is relative to side to move
-                    eval_val = 0.0
-                    if score_mate is not None:
-                        # Mate: Positive if side-to-move wins
-                        # If side-to-move is White: +M is White win (+). -M is White loss (-).
-                        # If side-to-move is Black: +M is Black win (-). -M is Black loss (+).
-                        if self.board.turn == chess.WHITE:
-                            eval_val = 100.0 if score_mate > 0 else -100.0
-                        else:
-                            eval_val = -100.0 if score_mate > 0 else 100.0
-                    else:
-                        # CP: Positive if side-to-move is better
-                        val = score_cp / 100.0
-                        if self.board.turn == chess.WHITE:
-                            eval_val = val
-                        else:
-                            eval_val = -val
-
-                    self.current_eval = eval_val
-                    self.root.after(0, self._update_eval_bar)
-
-            except Exception as e:
-                pass
-
-    def _render_analysis(self, data=None):
-        """Render analysis lines to the text widget."""
-        if not self.show_analysis.get(): return
+        if not self.show_analysis.get() or not self.analysis_engine:
+            return
         
-        # Use provided snapshot or current state (fallback)
-        pv_data = data if data is not None else self.analysis_pv_data
+        def analyze():
+            if not self.analysis_engine or not self.game_running:
+                return
+            
+            fen = self.board.fen()
+            num_lines = self.analysis_lines.get()
+            
+            # Update MultiPV setting
+            self.analysis_engine.set_option("MultiPV", str(num_lines))
+            self.analysis_engine._send(f"position fen {fen}")
+            self.analysis_engine._send("go infinite")
+            
+            # Collect PV data for each line
+            pv_data = {}  # {multipv_number: (score, depth, pv_moves)}
+            
+            while self.analysis_running and self.game_running:
+                line = self.analysis_engine._get_line(timeout=0.2)
+                if line:
+                    if "info" in line and "pv" in line:
+                        parts = line.split()
+                        try:
+                            # Extract depth
+                            depth = 0
+                            if "depth" in parts:
+                                depth_idx = parts.index("depth") + 1
+                                depth = int(parts[depth_idx])
+                            
+                            # Extract multipv number
+                            multipv = 1
+                            if "multipv" in parts:
+                                multipv_idx = parts.index("multipv") + 1
+                                multipv = int(parts[multipv_idx])
+                            
+                            # Extract score
+                            score_cp = 0
+                            score_mate = None
+                            if "score" in parts:
+                                score_idx = parts.index("score") + 1
+                                if parts[score_idx] == "cp":
+                                    score_cp = int(parts[score_idx + 1])
+                                elif parts[score_idx] == "mate":
+                                    score_mate = int(parts[score_idx + 1])
+                            
+                            # Extract PV moves
+                            pv_idx = parts.index("pv") + 1
+                            pv_moves = parts[pv_idx:pv_idx + 8]  # First 8 moves
+                            
+                            # Store this line's data
+                            pv_data[multipv] = (score_cp, score_mate, depth, pv_moves)
+                            
+                            # Update display every time we get new data
+                            if multipv <= num_lines:
+                                self.analysis_pv_data = [pv_data.get(i, (0, None, 0, [])) for i in range(1, num_lines + 1)]
+                                self.root.after(0, lambda: self._update_analysis_display(depth))
+                        except (ValueError, IndexError):
+                            pass
+                    elif line.startswith("bestmove"):
+                        break
         
+        threading.Thread(target=analyze, daemon=True).start()
+    
+    def _update_analysis_display(self, current_depth):
+        """Update the analysis panel with current PV lines."""
         self.analysis_text.config(state="normal")
         self.analysis_text.delete("1.0", "end")
         
+        is_white_to_move = self.board.turn == chess.WHITE
         arrows = []
-        sorted_lines = sorted(pv_data.items(), key=lambda x: x[0])
         
-        for multipv, (score_cp, score_mate, depth, pv_moves) in sorted_lines:
-            if multipv > self.analysis_lines.get(): continue
-            if not pv_moves: continue
+        for i, (score_cp, score_mate, depth, pv_moves) in enumerate(self.analysis_pv_data):
+            if not pv_moves:
+                continue
             
-            # Format Score (Absolute Perspective for display?)
-            # Usually analysis shows score from White's perspective with +/-
-            # OR relative score. Lichess shows relative but eval bar is absolute.
-            # Let's show Absolute White Perspective for consistency.
-
-            abs_score = score_cp
-            if self.board.turn == chess.BLACK:
-                abs_score = -score_cp
-
+            # Format score
             if score_mate is not None:
-                # Calculate absolute mate
-                # If turn=W, mate > 0 => M+3. mate < 0 => M-3.
-                # If turn=B, mate > 0 => M-3 (Black wins). mate < 0 => M+3 (White wins).
-                is_white_win = (self.board.turn == chess.WHITE and score_mate > 0) or \
-                               (self.board.turn == chess.BLACK and score_mate < 0)
-
-                mate_num = abs(score_mate)
-                sign = "+" if is_white_win else "-"
-                score_str = f"M{sign}{mate_num}"
-                score_tag = "score_good" if is_white_win else "score_bad"
+                if score_mate > 0:
+                    score_str = f"M{score_mate}"
+                    score_tag = "score_good"
+                else:
+                    score_str = f"M{score_mate}"
+                    score_tag = "score_bad"
             else:
-                score_str = f"{abs_score/100:+.2f}"
-                if abs_score > 50: score_tag = "score_good"
-                elif abs_score < -50: score_tag = "score_bad"
-                else: score_tag = "score_equal"
+                # Adjust for perspective
+                display_score = score_cp if is_white_to_move else -score_cp
+                score_str = f"{display_score/100:+.2f}"
+                if display_score > 50:
+                    score_tag = "score_good"
+                elif display_score < -50:
+                    score_tag = "score_bad"
+                else:
+                    score_tag = "score_equal"
             
-            # Moves to SAN
+            # Convert UCI moves to SAN for display
             san_moves = []
             temp_board = self.board.copy()
-            for uci in pv_moves[:8]:
+            for uci in pv_moves:
                 try:
                     move = temp_board.parse_uci(uci)
                     san_moves.append(temp_board.san(move))
                     temp_board.push(move)
                 except:
-                    break
+                    san_moves.append(uci)
             
-            line_text = f"{multipv}. [{score_str:>7}] d{depth:<2} "
-            moves_text = " ".join(san_moves)
+            # Build line text
+            line_text = f"{i+1}. [{score_str:>7}] d{depth:>2}  "
+            moves_text = " ".join(san_moves[:6])  # First 6 moves
             
+            # Insert with tags
             self.analysis_text.insert("end", line_text, "depth")
-            tag = "line1" if multipv == 1 else "moves"
+            tag = "line1" if i == 0 else "moves"
             self.analysis_text.insert("end", moves_text + "\n", tag)
-            self.analysis_text.tag_config(tag, foreground="#FFD700" if multipv==1 else "#CCCCCC")
             
-            # Arrow for best move
-            if multipv == 1:
+            # Add arrow for this line's first move
+            if pv_moves:
                 try:
-                    m = chess.Move.from_uci(pv_moves[0])
-                    arrows.append((m.from_square, m.to_square, "#00FF0080")) # Transparent Green
-                except: pass
-
+                    move = chess.Move.from_uci(pv_moves[0])
+                    color = "#22AA22" if i == 0 else "#CCCC22"  # Green for best, yellow for alt
+                    arrows.append((move.from_square, move.to_square, color))
+                except:
+                    pass
+        
         self.analysis_text.config(state="disabled")
         
-        # Only update arrows if changed
-        if arrows != self.analysis_arrows:
-            self.analysis_arrows = arrows
-            self._update_board()
+        # Store arrows and redraw board
+        self.analysis_arrows = arrows
+        self._update_board()
     
     def _start_eval_engine(self):
         """Start dedicated Stockfish engine for evaluation."""
-        # Note: In this refactor, we use the same AnalysisEngine for both eval and multi-PV
-        # to save resources, if the user enables analysis.
-        # If analysis is OFF but eval is ON, we start one.
-        if self.analysis_engine: return
-
-        self._start_analysis_engine()
+        if self.eval_engine is None:
+            eval_path = os.path.join(ENGINES_DIR, "stockfish-windows-x86-64-avx2.exe")
+            if os.path.exists(eval_path):
+                self.eval_engine = UCIEngine(eval_path, "EvalEngine")
+                self.eval_engine.set_option("Use NNUE", "true")
+                self.eval_engine.set_option("Threads", "1")  # Use 1 thread for eval
+                self.eval_engine.new_game()
+            else:
+                print(f"Eval engine not found: {eval_path}")
     
     def _stop_eval_engine(self):
         """Stop the evaluation engine."""
-        # Only stop if analysis is also off
-        if not self.show_analysis.get():
-            self._stop_analysis()
+        if self.eval_engine:
+            self.eval_engine.quit()
+            self.eval_engine = None
     
     def _request_evaluation(self):
         """Request position evaluation from eval engine."""
-        # We reuse _request_analysis which updates both
-        self._request_analysis()
+        if not self.show_evaluation.get() or not self.eval_engine:
+            return
+        
+        def evaluate():
+            if self.eval_engine and self.game_running:
+                fen = self.board.fen()
+                # Get evaluation using info score
+                self.eval_engine._send(f"position fen {fen}")
+                self.eval_engine._send(f"go depth {self.eval_depth}")
+                
+                score_cp = 0
+                score_mate = None
+                
+                start = time.time()
+                while time.time() - start < 10:  # 10 second timeout
+                    if not self.eval_engine:  # Engine was stopped
+                        return
+                    line = self.eval_engine._get_line(timeout=0.5)
+                    if line:
+                        if "score cp" in line:
+                            # Extract centipawn score
+                            parts = line.split()
+                            try:
+                                idx = parts.index("cp") + 1
+                                score_cp = int(parts[idx])
+                            except:
+                                pass
+                        elif "score mate" in line:
+                            # Mate score
+                            parts = line.split()
+                            try:
+                                idx = parts.index("mate") + 1
+                                score_mate = int(parts[idx])
+                            except:
+                                pass
+                        elif line.startswith("bestmove"):
+                            break
+                
+                # Convert to pawns (centipawns / 100)
+                if score_mate is not None:
+                    # Mate scores: positive = white wins, negative = black wins
+                    if score_mate > 0:
+                        self.current_eval = 100.0  # White winning
+                    else:
+                        self.current_eval = -100.0  # Black winning
+                else:
+                    self.current_eval = score_cp / 100.0
+                
+                # Adjust for side to move (scores are from side to move perspective)
+                if self.board.turn == chess.BLACK:
+                    self.current_eval = -self.current_eval
+                
+                # Update UI on main thread
+                self.root.after(0, self._update_eval_bar)
+        
+        threading.Thread(target=evaluate, daemon=True).start()
     
     def _update_eval_bar(self):
         """Update the visual evaluation bar with smooth animation."""
@@ -1081,7 +1049,6 @@ class ChessApp:
                                           fill="#666", width=2)
         
         # Update score label with current eval (not display_eval for accuracy)
-        # Use Absolute White Perspective
         if abs(self.current_eval) >= 100:
             # Mate
             if self.current_eval > 0:
@@ -1090,10 +1057,9 @@ class ChessApp:
                 self.eval_score_label.config(text="M-", fg="#E74C3C")
         else:
             sign = "+" if self.current_eval > 0 else ""
-            val = self.current_eval
-            self.eval_score_label.config(text=f"{sign}{val:.1f}",
-                                         fg="#81B64C" if val > 0.5 else
-                                         "#E74C3C" if val < -0.5 else "#AAA")
+            self.eval_score_label.config(text=f"{sign}{self.current_eval:.1f}",
+                                         fg="#81B64C" if self.current_eval > 0.5 else 
+                                         "#E74C3C" if self.current_eval < -0.5 else "#AAA")
     
     def _update_player_labels(self):
         """Update the player name labels on the board."""
