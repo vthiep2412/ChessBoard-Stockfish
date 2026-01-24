@@ -976,7 +976,38 @@ pub fn evaluate_delta(board: &Board, mv: chess::ChessMove) -> i32 {
         delta += (promo_delta_mg * phase + promo_delta_eg * (24 - phase)) / 24;
     }
     
-    // TODO: Handle castling rook movement for more accuracy
+    // Handle castling rook movement
+    if piece == Piece::King {
+        let from_file = from.get_file().to_index();
+        let to_file = to.get_file().to_index();
+
+        // Check if move is castling (King moves 2 squares)
+        if (from_file as i32 - to_file as i32).abs() == 2 {
+            let rank = from.get_rank();
+            // Determine rook source and dest
+            // Kingside: file 4 -> 6 (e -> g). Rook: h -> f (file 7 -> 5)
+            // Queenside: file 4 -> 2 (e -> c). Rook: a -> d (file 0 -> 3)
+
+            let (rook_from_file, rook_to_file) = if to_file > from_file {
+                // Kingside
+                (chess::File::H, chess::File::F)
+            } else {
+                // Queenside
+                (chess::File::A, chess::File::D)
+            };
+
+            let rook_from = Square::make_square(rank, rook_from_file);
+            let rook_to = Square::make_square(rank, rook_to_file);
+
+            let (r_old_mg, r_old_eg) = piece_value(Piece::Rook, rook_from, is_white);
+            let (r_new_mg, r_new_eg) = piece_value(Piece::Rook, rook_to, is_white);
+
+            let r_delta_mg = r_new_mg - r_old_mg;
+            let r_delta_eg = r_new_eg - r_old_eg;
+
+            delta += (r_delta_mg * phase + r_delta_eg * (24 - phase)) / 24;
+        }
+    }
     
     delta
 }
@@ -990,4 +1021,99 @@ pub fn evaluate_after_move(board: &Board, mv: chess::ChessMove, prev_eval: i32) 
     // After our move, we negate and add delta  
     let delta = evaluate_delta(board, mv);
     -(prev_eval) + delta
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chess::{Board, ChessMove, Square, Rank, File, Piece};
+    use std::str::FromStr;
+
+    #[test]
+    fn test_castling_delta_includes_rook() {
+        // Position where white can castle kingside
+        let fen = "r3k2r/pppq1ppp/2npb3/2b1p3/2B1P3/2NPB3/PPPQ1PPP/R3K2R w KQkq - 4 8";
+        let board = Board::from_str(fen).unwrap();
+
+        // e1g1 (White Kingside Castle)
+        let from = Square::make_square(Rank::First, File::E);
+        let to = Square::make_square(Rank::First, File::G);
+        let m = ChessMove::new(from, to, None);
+
+        let delta = evaluate_delta(&board, m);
+
+        // Calculate expected components
+        let phase = game_phase(&board);
+        let is_white = true; // White to move
+
+        // King
+        let (k_old_mg, k_old_eg) = piece_value(Piece::King, from, is_white);
+        let (k_new_mg, k_new_eg) = piece_value(Piece::King, to, is_white);
+        let k_delta_mg = k_new_mg - k_old_mg;
+        let k_delta_eg = k_new_eg - k_old_eg;
+        let k_val = (k_delta_mg * phase + k_delta_eg * (24 - phase)) / 24;
+
+        // Rook (h1 -> f1)
+        let r_from = Square::make_square(Rank::First, File::H);
+        let r_to = Square::make_square(Rank::First, File::F);
+        let (r_old_mg, r_old_eg) = piece_value(Piece::Rook, r_from, is_white);
+        let (r_new_mg, r_new_eg) = piece_value(Piece::Rook, r_to, is_white);
+        let r_delta_mg = r_new_mg - r_old_mg;
+        let r_delta_eg = r_new_eg - r_old_eg;
+        let r_val = (r_delta_mg * phase + r_delta_eg * (24 - phase)) / 24;
+
+        let expected_delta = k_val + r_val;
+
+        println!("Phase: {}", phase);
+        println!("King delta: {}", k_val);
+        println!("Rook delta: {}", r_val);
+        println!("Actual delta: {}", delta);
+        println!("Expected delta: {}", expected_delta);
+
+        assert_eq!(delta, expected_delta, "Evaluate delta should include rook movement for castling");
+    }
+
+    #[test]
+    fn test_castling_delta_queenside_black() {
+        // Position where black can castle queenside
+        // r3k2r/pppq1ppp/2npb3/2b1p3/2B1P3/2NPB3/PPPQ1PPP/R3K2R b KQkq - 4 8
+        let fen = "r3k2r/pppq1ppp/2npb3/2b1p3/2B1P3/2NPB3/PPPQ1PPP/R3K2R b KQkq - 4 8";
+        let board = Board::from_str(fen).unwrap();
+
+        // e8c8 (Black Queenside Castle)
+        let from = Square::make_square(Rank::Eighth, File::E);
+        let to = Square::make_square(Rank::Eighth, File::C);
+        let m = ChessMove::new(from, to, None);
+
+        let delta = evaluate_delta(&board, m);
+
+        let phase = game_phase(&board);
+        let is_white = false; // Black to move
+
+        // King (e8 -> c8)
+        let (k_old_mg, k_old_eg) = piece_value(Piece::King, from, is_white);
+        let (k_new_mg, k_new_eg) = piece_value(Piece::King, to, is_white);
+        let k_delta_mg = k_new_mg - k_old_mg;
+        let k_delta_eg = k_new_eg - k_old_eg;
+        let k_val = (k_delta_mg * phase + k_delta_eg * (24 - phase)) / 24;
+
+        // Rook (a8 -> d8)
+        let r_from = Square::make_square(Rank::Eighth, File::A);
+        let r_to = Square::make_square(Rank::Eighth, File::D);
+        let (r_old_mg, r_old_eg) = piece_value(Piece::Rook, r_from, is_white);
+        let (r_new_mg, r_new_eg) = piece_value(Piece::Rook, r_to, is_white);
+        let r_delta_mg = r_new_mg - r_old_mg;
+        let r_delta_eg = r_new_eg - r_old_eg;
+        let r_val = (r_delta_mg * phase + r_delta_eg * (24 - phase)) / 24;
+
+        let expected_delta = k_val + r_val;
+
+        println!("Phase: {}", phase);
+        println!("King delta: {}", k_val);
+        println!("Rook delta: {}", r_val);
+        println!("Actual delta: {}", delta);
+        println!("Expected delta: {}", expected_delta);
+
+        assert_eq!(delta, expected_delta, "Evaluate delta should include rook movement for black queenside castling");
+    }
 }
