@@ -138,10 +138,16 @@ class UCIEngine:
         self._send("isready")
         self._wait_for("readyok", timeout=60) # Increased for safety
     
-    def get_best_move(self, fen, depth=15, timeout=120):
-        """Get best move using depth-based search. Returns (bestmove, ponder_move)."""
+    def get_best_move(self, fen, depth=15, timeout=120, wtime=None, btime=None):
+        """Get best move using depth or time-based search. Returns (bestmove, ponder_move)."""
         self._send(f"position fen {fen}")
-        self._send(f"go depth {depth}")
+
+        if wtime is not None and btime is not None:
+            # Use time management if time is provided
+            self._send(f"go wtime {wtime} btime {btime} depth {depth}")
+        else:
+            # Fallback to fixed depth
+            self._send(f"go depth {depth}")
         
         start = time.time()
         while self.process and time.time() - start < timeout:
@@ -339,6 +345,7 @@ class ChessApp:
         self.engine_depth = tk.IntVar(value=15)
         self.engine_contempt = tk.IntVar(value=50)
         self.engine_skill = tk.IntVar(value=20)
+        self.show_best_move_arrow = tk.BooleanVar(value=False) # New Setting
         
         # In-game settings (not saved)
         self.show_evaluation = tk.BooleanVar(value=False)
@@ -388,6 +395,7 @@ class ChessApp:
                 self.engine_depth.set(data.get('engine_depth', 15))
                 self.engine_contempt.set(data.get('engine_contempt', 50))
                 self.engine_skill.set(data.get('engine_skill', 20))
+                self.show_best_move_arrow.set(data.get('show_best_move_arrow', False))
         except Exception as e:
             print(f"Error loading settings: {e}")
     
@@ -398,7 +406,8 @@ class ChessApp:
                 'ponder_enabled': self.ponder_enabled.get(),
                 'engine_depth': self.engine_depth.get(),
                 'engine_contempt': self.engine_contempt.get(),
-                'engine_skill': self.engine_skill.get()
+                'engine_skill': self.engine_skill.get(),
+                'show_best_move_arrow': self.show_best_move_arrow.get()
             }
             with open(SETTINGS_FILE, 'w') as f:
                 json.dump(data, f, indent=2)
@@ -589,6 +598,16 @@ class ChessApp:
         ttk.Label(ponder_frame, text="Engine thinks during your turn", 
                   foreground="#888", font=("Arial", 9)).pack(anchor="w", padx=5)
         
+        # Best Move Arrow Setting (Only relevant if Analysis is ON, but good to have in settings)
+        arrow_frame = ttk.Frame(dialog)
+        arrow_frame.pack(fill="x", padx=20, pady=8)
+        # Temporary var for arrow setting
+        temp_arrow = tk.BooleanVar(value=self.show_best_move_arrow.get())
+        ttk.Checkbutton(arrow_frame, text="Show Best Move Arrow", variable=temp_arrow,
+                        bootstyle="success-round-toggle").pack(anchor="w")
+        ttk.Label(arrow_frame, text="Shows green arrow for top Stockfish move",
+                  foreground="#888", font=("Arial", 9)).pack(anchor="w", padx=5)
+
         # Depth setting with value label
         depth_frame = ttk.Frame(dialog)
         depth_frame.pack(fill="x", padx=20, pady=8)
@@ -632,7 +651,10 @@ class ChessApp:
             self.engine_depth.set(int(temp_depth.get()))
             self.engine_skill.set(int(temp_skill.get()))
             self.engine_contempt.set(int(temp_contempt.get()))
+            self.show_best_move_arrow.set(temp_arrow.get())
             self._save_settings()
+            # If Arrow setting changed, refresh board
+            self._update_board()
             dialog.destroy()
         
         ttk.Button(dialog, text="OK", command=apply_and_close, 
@@ -786,6 +808,14 @@ class ChessApp:
         ttk.Checkbutton(analysis_frame, text="Show Stockfish Analysis", variable=temp_show_analysis,
                         bootstyle="info-round-toggle").pack(anchor="w")
         
+        # Show Best Move Arrow Toggle (only if analysis is on)
+        if temp_show_analysis.get():
+            arrow_frame = ttk.Frame(dialog)
+            arrow_frame.pack(fill="x", padx=40, pady=2)
+            temp_arrow_game = tk.BooleanVar(value=self.show_best_move_arrow.get())
+            ttk.Checkbutton(arrow_frame, text="Show Green Arrow", variable=temp_arrow_game,
+                            bootstyle="success-round-toggle").pack(anchor="w")
+
         # Analysis lines slider
         lines_frame = ttk.Frame(dialog)
         lines_frame.pack(fill="x", padx=20, pady=8)
@@ -806,7 +836,15 @@ class ChessApp:
             if temp_show_analysis.get() != self.show_analysis.get():
                 self.show_analysis.set(temp_show_analysis.get())
                 self._toggle_analysis_display()
+
+            # Apply arrow setting if present
+            if temp_show_analysis.get():
+                self.show_best_move_arrow.set(temp_arrow_game.get())
+
             self.analysis_lines.set(int(temp_analysis_lines.get()))
+
+            # Update board to reflect arrow setting
+            self._update_board()
             dialog.destroy()
         
         ttk.Button(dialog, text="OK", command=apply_and_close, 
@@ -1018,9 +1056,13 @@ class ChessApp:
         self.analysis_text.config(state="disabled")
         
         # Only update arrows if changed
-        if arrows != self.analysis_arrows:
+        # Update arrows if changed OR if setting enabled
+        if self.show_best_move_arrow.get():
             self.analysis_arrows = arrows
-            self._update_board()
+        else:
+            self.analysis_arrows = []
+
+        self._update_board()
     
     def _start_eval_engine(self):
         """Start dedicated Stockfish engine for evaluation."""
@@ -1356,6 +1398,17 @@ class ChessApp:
                     cx, cy = x + self.SQUARE_SIZE // 2, y + self.SQUARE_SIZE // 2
                     self.canvas.create_oval(cx-r, cy-r, cx+r, cy+r, fill="#888888", outline="")
 
+                # Draw analysis arrow
+                if self.show_best_move_arrow.get() and self.analysis_arrows:
+                    for from_sq, to_sq, color in self.analysis_arrows:
+                        if sq == from_sq:
+                            # Draw arrow start
+                            pass
+                        # Actual drawing needs to be on top of squares but below pieces?
+                        # Or pieces on top. Let's draw arrows AFTER squares but BEFORE pieces.
+                        # Wait, we need to iterate arrows separately or draw here.
+                        # Easier to draw arrows after all squares.
+
                 piece = self.board.piece_at(sq)
                 if piece:
                     img = self.pieces_images.get(piece.symbol())
@@ -1364,6 +1417,11 @@ class ChessApp:
                         txt = piece.unicode_symbol()
                         self.canvas.create_text(x + self.SQUARE_SIZE//2, y + self.SQUARE_SIZE//2, 
                                               text=txt, font=("Arial", 30))
+
+        # Draw arrows on top of everything
+        if self.show_best_move_arrow.get():
+            for from_sq, to_sq, color in self.analysis_arrows:
+                self._draw_arrow(from_sq, to_sq, color)
 
         self.history_text.config(state="normal")
         self.history_text.delete(1.0, tk.END)
@@ -1384,6 +1442,17 @@ class ChessApp:
         
         if self.board.is_game_over(): self.turn_label.config(text=f"Game Over: {self.board.result()}")
         else: self.turn_label.config(text="White's Turn" if self.board.turn == chess.WHITE else "Black's Turn")
+
+    def _draw_arrow(self, start_sq, end_sq, color):
+        """Draw an arrow on the board."""
+        # Calculate coordinates
+        x1 = chess.square_file(start_sq) * self.SQUARE_SIZE + self.SQUARE_SIZE // 2
+        y1 = (7 - chess.square_rank(start_sq)) * self.SQUARE_SIZE + self.SQUARE_SIZE // 2
+        x2 = chess.square_file(end_sq) * self.SQUARE_SIZE + self.SQUARE_SIZE // 2
+        y2 = (7 - chess.square_rank(end_sq)) * self.SQUARE_SIZE + self.SQUARE_SIZE // 2
+
+        # Draw line
+        self.canvas.create_line(x1, y1, x2, y2, fill=color, width=5, arrow=tk.LAST, arrowshape=(15, 20, 10))
 
     def _animate_move(self, move, callback):
         start_sq = move.from_square
@@ -1510,7 +1579,13 @@ class ChessApp:
             engine = self.engines.get('computer')
             if engine:
                 depth = self.engine_depth.get()
-                best, ponder = engine.get_best_move(self.board.fen(), depth)
+
+                # Pass default time controls (5 mins) to activate time management logic in engine
+                # This ensures the engine doesn't think forever if depth is high
+                wtime = 300000
+                btime = 300000
+
+                best, ponder = engine.get_best_move(self.board.fen(), depth, wtime=wtime, btime=btime)
                 if best:
                     self.root.after(0, lambda: self._apply_move_uci_with_ponder(best, ponder))
         threading.Thread(target=think, daemon=True).start()
