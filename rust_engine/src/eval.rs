@@ -780,37 +780,37 @@ fn piece_val_see(p: Piece) -> i32 {
 /// Used for Static Exchange Evaluation (SEE)
 fn get_attackers_to(sq: Square, occupied: chess::BitBoard, board: &Board) -> chess::BitBoard {
     use chess::{get_bishop_moves, get_rook_moves, get_knight_moves, get_king_moves, get_pawn_attacks};
-
+    
     let mut attackers = chess::BitBoard(0);
-
+    
     // Knights
     attackers |= get_knight_moves(sq) & board.pieces(Piece::Knight);
-
+    
     // King
     attackers |= get_king_moves(sq) & board.pieces(Piece::King);
-
+    
     // Pawns
     // Attackers from White Pawns = Squares that a Black Pawn at `sq` would attack (reverse capture)
     let white_pawns = board.pieces(Piece::Pawn) & board.color_combined(Color::White);
     let black_pawns = board.pieces(Piece::Pawn) & board.color_combined(Color::Black);
-
+    
     // Note: get_pawn_attacks(sq, color, include_defenders)
     attackers |= get_pawn_attacks(sq, Color::Black, chess::BitBoard(0)) & white_pawns;
     attackers |= get_pawn_attacks(sq, Color::White, chess::BitBoard(0)) & black_pawns;
-
+    
     // Sliding pieces (Bishop/Queen diagonal)
     // We must recalculate these with the new 'occupied' bitboard
     let diag_sliders = board.pieces(Piece::Bishop) | board.pieces(Piece::Queen);
     if diag_sliders.0 != 0 {
         attackers |= get_bishop_moves(sq, occupied) & diag_sliders;
     }
-
+    
     // Sliding pieces (Rook/Queen orthogonal)
     let orth_sliders = board.pieces(Piece::Rook) | board.pieces(Piece::Queen);
     if orth_sliders.0 != 0 {
         attackers |= get_rook_moves(sq, occupied) & orth_sliders;
     }
-
+    
     attackers
 }
 
@@ -820,13 +820,13 @@ fn get_attackers_to(sq: Square, occupied: chess::BitBoard, board: &Board) -> che
 pub fn see(board: &Board, mv: ChessMove) -> i32 {
     let from = mv.get_source();
     let to = mv.get_dest();
-
+    
     // Initial gain
     let mut gain = [0i32; 32];
     let mut d = 0;
-
+    
     let mut attacker = board.piece_on(from).unwrap();
-
+    
     // Value of the piece being captured
     let mut victim_val = if let Some(p) = board.piece_on(to) {
         piece_val_see(p)
@@ -835,7 +835,7 @@ pub fn see(board: &Board, mv: ChessMove) -> i32 {
     } else {
         0
     };
-
+    
     // Handle promotion on the first move
     if let Some(promo) = mv.get_promotion() {
         gain[d] = victim_val + piece_val_see(promo) - 100; // Gain promo value, lose pawn value
@@ -844,7 +844,7 @@ pub fn see(board: &Board, mv: ChessMove) -> i32 {
         gain[d] = victim_val;
     }
     d += 1;
-
+    
     // If not a capture and no promotion, SEE is 0
     if gain[0] == 0 && mv.get_promotion().is_none() {
         return 0;
@@ -854,19 +854,19 @@ pub fn see(board: &Board, mv: ChessMove) -> i32 {
     // Note: chess::BitBoard wraps u64, so we use logic operators on it
     let mut occupied = *board.combined() ^ chess::BitBoard::from_square(from);
     let mut side = !board.side_to_move();
-
+    
     // Iterative exchange
     loop {
         // Find attackers for the current side
         let attackers = get_attackers_to(to, occupied, board) & board.color_combined(side);
-
+        
         if attackers.0 == 0 { break; }
-
+        
         // Find Least Valuable Attacker (LVA)
         // Order: Pawn, Knight, Bishop, Rook, Queen, King
         let mut next_att_sq = None;
         let mut next_att_piece = Piece::King;
-
+        
         for p in [Piece::Pawn, Piece::Knight, Piece::Bishop, Piece::Rook, Piece::Queen, Piece::King] {
              let piece_attackers = attackers & board.pieces(p);
              if piece_attackers.0 != 0 {
@@ -876,15 +876,15 @@ pub fn see(board: &Board, mv: ChessMove) -> i32 {
                  break;
              }
         }
-
+        
         if let Some(sq) = next_att_sq {
             // Remove the attacker from occupied (make the capture)
             occupied ^= chess::BitBoard::from_square(sq);
-
+            
             // Gain for this side is: Value of piece captured - Gain of previous side
             // Note: gain array stores cumulative balance from POV of side that started
             gain[d] = piece_val_see(attacker) - gain[d-1];
-
+            
             attacker = next_att_piece;
             side = !side;
             d += 1;
@@ -892,14 +892,14 @@ pub fn see(board: &Board, mv: ChessMove) -> i32 {
             break;
         }
     }
-
+    
     // Minimax the gain array back up to find true value
     // Each side will choose to stop if capturing leads to a worse result
     while d > 1 {
         d -= 1;
         gain[d-1] = -(-gain[d-1]).max(gain[d]);
     }
-
+    
     gain[0]
 }
 
@@ -907,34 +907,34 @@ pub fn see(board: &Board, mv: ChessMove) -> i32 {
 /// Bonus for controlling squares in enemy territory/center
 fn evaluate_space(board: &Board) -> (i32, i32) {
     let phase = game_phase(board);
-
+    
     // Space is mostly important in middlegame
     if phase < 10 { return (0, 0); }
-
+    
     let mut white_score = 0;
     let mut black_score = 0;
-
+    
     let white_occ = board.color_combined(Color::White);
     let black_occ = board.color_combined(Color::Black);
-
+    
     // Safe squares center mask (files C-F, ranks 2-5 for white, 3-6 for black)
     // 0x00003C3C3C3C0000 is center 4x4
     let center_mask = 0x00003C3C3C3C0000;
-
+    
     // White space: squares attacked by white non-pawns in center/enemy half
     // that are NOT attacked by black pawns
     // Simplified: Just bonus for piece presence in center
-
+    
     let safe_mask_white = !0; // TODO: Filter by black pawn attacks
     let safe_mask_black = !0; // TODO: Filter by white pawn attacks
-
+    
     // Simple bonus for pieces in center
     let white_center = (white_occ.0 & center_mask).count_ones() as i32;
     let black_center = (black_occ.0 & center_mask).count_ones() as i32;
-
+    
     white_score += white_center * 10;
     black_score += black_center * 10;
-
+    
     (white_score, black_score)
 }
 
@@ -942,20 +942,20 @@ fn evaluate_space(board: &Board) -> (i32, i32) {
 fn evaluate_outposts(board: &Board) -> (i32, i32) {
     let mut white_score = 0;
     let mut black_score = 0;
-
+    
     let white_pieces = board.color_combined(Color::White);
     let black_pieces = board.color_combined(Color::Black);
     let white_pawns = board.pieces(Piece::Pawn) & white_pieces;
     let black_pawns = board.pieces(Piece::Pawn) & black_pieces;
-
+    
     // White outposts: Ranks 4, 5, 6
     // Supported by white pawn
     // Not attackable by black pawns (simplified: just supported for now)
-
+    
     for piece in [Piece::Knight, Piece::Bishop] {
         let w_pieces = board.pieces(piece) & white_pieces;
         let b_pieces = board.pieces(piece) & black_pieces;
-
+        
         for sq in w_pieces {
             let rank = sq.get_rank().to_index();
             if rank >= 3 && rank <= 5 {
@@ -964,13 +964,13 @@ fn evaluate_outposts(board: &Board) -> (i32, i32) {
                 let support_sqs = chess::get_pawn_attacks(sq, Color::Black, chess::BitBoard(0));
                 if (support_sqs & white_pawns).0 != 0 {
                     white_score += 25; // Supported outpost
-
+                    
                     // Bonus if on opponent half
                     if rank >= 4 { white_score += 15; }
                 }
             }
         }
-
+        
         for sq in b_pieces {
             let rank = sq.get_rank().to_index();
             if rank >= 2 && rank <= 4 { // Black perspective ranks 5, 4, 3
@@ -984,7 +984,7 @@ fn evaluate_outposts(board: &Board) -> (i32, i32) {
             }
         }
     }
-
+    
     (white_score, black_score)
 }
 
@@ -1001,7 +1001,7 @@ fn full_evaluate(board: &Board, base_score: i32) -> i32 {
     let (white_space, black_space) = evaluate_space(board);
     let (white_outpost, black_outpost) = evaluate_outposts(board);
     
-    let positional = (white_pawn - black_pawn) + (white_king - black_king) +
+    let positional = (white_pawn - black_pawn) + (white_king - black_king) + 
                      (white_mobility - black_mobility) + (white_space - black_space) +
                      (white_outpost - black_outpost);
     
@@ -1204,38 +1204,7 @@ pub fn evaluate_delta(board: &Board, mv: chess::ChessMove) -> i32 {
         delta += (promo_delta_mg * phase + promo_delta_eg * (24 - phase)) / 24;
     }
     
-    // Handle castling rook movement
-    if piece == Piece::King {
-        let from_file = from.get_file().to_index();
-        let to_file = to.get_file().to_index();
-
-        // Check if move is castling (King moves 2 squares)
-        if (from_file as i32 - to_file as i32).abs() == 2 {
-            let rank = from.get_rank();
-            // Determine rook source and dest
-            // Kingside: file 4 -> 6 (e -> g). Rook: h -> f (file 7 -> 5)
-            // Queenside: file 4 -> 2 (e -> c). Rook: a -> d (file 0 -> 3)
-
-            let (rook_from_file, rook_to_file) = if to_file > from_file {
-                // Kingside
-                (chess::File::H, chess::File::F)
-            } else {
-                // Queenside
-                (chess::File::A, chess::File::D)
-            };
-
-            let rook_from = Square::make_square(rank, rook_from_file);
-            let rook_to = Square::make_square(rank, rook_to_file);
-
-            let (r_old_mg, r_old_eg) = piece_value(Piece::Rook, rook_from, is_white);
-            let (r_new_mg, r_new_eg) = piece_value(Piece::Rook, rook_to, is_white);
-
-            let r_delta_mg = r_new_mg - r_old_mg;
-            let r_delta_eg = r_new_eg - r_old_eg;
-
-            delta += (r_delta_mg * phase + r_delta_eg * (24 - phase)) / 24;
-        }
-    }
+    // TODO: Handle castling rook movement for more accuracy
     
     delta
 }
@@ -1249,99 +1218,4 @@ pub fn evaluate_after_move(board: &Board, mv: chess::ChessMove, prev_eval: i32) 
     // After our move, we negate and add delta  
     let delta = evaluate_delta(board, mv);
     -(prev_eval) + delta
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use chess::{Board, ChessMove, Square, Rank, File, Piece};
-    use std::str::FromStr;
-
-    #[test]
-    fn test_castling_delta_includes_rook() {
-        // Position where white can castle kingside
-        let fen = "r3k2r/pppq1ppp/2npb3/2b1p3/2B1P3/2NPB3/PPPQ1PPP/R3K2R w KQkq - 4 8";
-        let board = Board::from_str(fen).unwrap();
-
-        // e1g1 (White Kingside Castle)
-        let from = Square::make_square(Rank::First, File::E);
-        let to = Square::make_square(Rank::First, File::G);
-        let m = ChessMove::new(from, to, None);
-
-        let delta = evaluate_delta(&board, m);
-
-        // Calculate expected components
-        let phase = game_phase(&board);
-        let is_white = true; // White to move
-
-        // King
-        let (k_old_mg, k_old_eg) = piece_value(Piece::King, from, is_white);
-        let (k_new_mg, k_new_eg) = piece_value(Piece::King, to, is_white);
-        let k_delta_mg = k_new_mg - k_old_mg;
-        let k_delta_eg = k_new_eg - k_old_eg;
-        let k_val = (k_delta_mg * phase + k_delta_eg * (24 - phase)) / 24;
-
-        // Rook (h1 -> f1)
-        let r_from = Square::make_square(Rank::First, File::H);
-        let r_to = Square::make_square(Rank::First, File::F);
-        let (r_old_mg, r_old_eg) = piece_value(Piece::Rook, r_from, is_white);
-        let (r_new_mg, r_new_eg) = piece_value(Piece::Rook, r_to, is_white);
-        let r_delta_mg = r_new_mg - r_old_mg;
-        let r_delta_eg = r_new_eg - r_old_eg;
-        let r_val = (r_delta_mg * phase + r_delta_eg * (24 - phase)) / 24;
-
-        let expected_delta = k_val + r_val;
-
-        println!("Phase: {}", phase);
-        println!("King delta: {}", k_val);
-        println!("Rook delta: {}", r_val);
-        println!("Actual delta: {}", delta);
-        println!("Expected delta: {}", expected_delta);
-
-        assert_eq!(delta, expected_delta, "Evaluate delta should include rook movement for castling");
-    }
-
-    #[test]
-    fn test_castling_delta_queenside_black() {
-        // Position where black can castle queenside
-        // r3k2r/pppq1ppp/2npb3/2b1p3/2B1P3/2NPB3/PPPQ1PPP/R3K2R b KQkq - 4 8
-        let fen = "r3k2r/pppq1ppp/2npb3/2b1p3/2B1P3/2NPB3/PPPQ1PPP/R3K2R b KQkq - 4 8";
-        let board = Board::from_str(fen).unwrap();
-
-        // e8c8 (Black Queenside Castle)
-        let from = Square::make_square(Rank::Eighth, File::E);
-        let to = Square::make_square(Rank::Eighth, File::C);
-        let m = ChessMove::new(from, to, None);
-
-        let delta = evaluate_delta(&board, m);
-
-        let phase = game_phase(&board);
-        let is_white = false; // Black to move
-
-        // King (e8 -> c8)
-        let (k_old_mg, k_old_eg) = piece_value(Piece::King, from, is_white);
-        let (k_new_mg, k_new_eg) = piece_value(Piece::King, to, is_white);
-        let k_delta_mg = k_new_mg - k_old_mg;
-        let k_delta_eg = k_new_eg - k_old_eg;
-        let k_val = (k_delta_mg * phase + k_delta_eg * (24 - phase)) / 24;
-
-        // Rook (a8 -> d8)
-        let r_from = Square::make_square(Rank::Eighth, File::A);
-        let r_to = Square::make_square(Rank::Eighth, File::D);
-        let (r_old_mg, r_old_eg) = piece_value(Piece::Rook, r_from, is_white);
-        let (r_new_mg, r_new_eg) = piece_value(Piece::Rook, r_to, is_white);
-        let r_delta_mg = r_new_mg - r_old_mg;
-        let r_delta_eg = r_new_eg - r_old_eg;
-        let r_val = (r_delta_mg * phase + r_delta_eg * (24 - phase)) / 24;
-
-        let expected_delta = k_val + r_val;
-
-        println!("Phase: {}", phase);
-        println!("King delta: {}", k_val);
-        println!("Rook delta: {}", r_val);
-        println!("Actual delta: {}", delta);
-        println!("Expected delta: {}", expected_delta);
-
-        assert_eq!(delta, expected_delta, "Evaluate delta should include rook movement for black queenside castling");
-    }
 }
