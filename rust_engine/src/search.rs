@@ -249,14 +249,52 @@ const MATE_SCORE: i32 = 29000;
 const CONTEMPT: i32 = -15; // Slight draw aversion (engine sees draws as bad)
 
 // Node counters for diagnostics - ATOMIC for thread-safe parallel search
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 static NODE_COUNT: AtomicU64 = AtomicU64::new(0);
 static QNODE_COUNT: AtomicU64 = AtomicU64::new(0);
+static STOP_SEARCH: AtomicBool = AtomicBool::new(false);
+
+/// Time Management
+#[derive(Clone, Copy)]
+pub struct TimeManager {
+    pub start_time: std::time::Instant,
+    pub allocated_time: u128, // millis
+}
+
+impl TimeManager {
+    pub fn new(wtime: Option<u64>, btime: Option<u64>, movestogo: Option<u64>, turn: chess::Color) -> Option<Self> {
+        let time_left = if turn == chess::Color::White { wtime } else { btime };
+        
+        if let Some(t) = time_left {
+            let moves = movestogo.unwrap_or(30).max(1);
+            let mut alloc = t / moves;
+            
+            // Safety buffer (don't use all time)
+            alloc = alloc.saturating_sub(50);
+            
+            // Minimum search time
+            if alloc < 50 { alloc = 50; }
+            
+            Some(Self {
+                start_time: std::time::Instant::now(),
+                allocated_time: alloc as u128,
+            })
+        } else {
+            None
+        }
+    }
+    
+    #[inline(always)]
+    pub fn check_time(&self) -> bool {
+        self.start_time.elapsed().as_millis() > self.allocated_time
+    }
+}
 
 /// Reset node counters (thread-safe)
 pub fn reset_node_counts() {
     NODE_COUNT.store(0, Ordering::Relaxed);
     QNODE_COUNT.store(0, Ordering::Relaxed);
+    STOP_SEARCH.store(false, Ordering::Relaxed);
 }
 
 /// Get node counts (thread-safe)
@@ -414,9 +452,27 @@ fn negamax(
     beta: i32,
     ply: u8,
     null_ok: bool,  // Can we try null move?
+    time_manager: Option<TimeManager>,
 ) -> (i32, Option<ChessMove>) {
     // Count nodes (thread-safe)
-    NODE_COUNT.fetch_add(1, Ordering::Relaxed);
+    let nodes = NODE_COUNT.fetch_add(1, Ordering::Relaxed);
+    
+    // Check time every 2048 nodes
+    if nodes & 2047 == 0 {
+        if STOP_SEARCH.load(Ordering::Relaxed) {
+            return (0, None);
+        }
+        if let Some(tm) = time_manager {
+            if tm.check_time() {
+                STOP_SEARCH.store(true, Ordering::Relaxed);
+                return (0, None);
+            }
+        }
+    }
+    
+    if STOP_SEARCH.load(Ordering::Relaxed) {
+        return (0, None);
+    }
     
     // Debug: Log entry at low ply for diagnostics
     if is_debug() && ply <= 2 {
@@ -518,12 +574,33 @@ fn negamax(
         if let Some(null_board) = board.null_move() {
             let r = 2 + depth / 4;  // Reduction factor
             // Note: eval_state doesn't change on null move (no piece moved)
-            let (score, _) = negamax(&null_board, eval_state, None, depth.saturating_sub(1 + r), -beta, -beta + 1, ply + 1, false);
+            let (score, _) = negamax(&null_board, eval_state, None, depth.saturating_sub(1 + r), -beta, -beta + 1, ply + 1, false, time_manager);
             let score = -score;
+            
+            if STOP_SEARCH.load(Ordering::Relaxed) { return (0, None); }
             
             if score >= beta {
                 return (beta, None);  // Prune!
             }
+        }
+    }
+    
+    // ==========================================
+    // PROBCUT
+    // If a shallow search with a shifted window triggers a cutoff, assume deep search will too
+    // ==========================================
+    if !in_check && depth >= 5 && tt_move.is_some() {
+        let probcut_beta = beta + 200;
+        let probcut_depth = depth - 4;
+        
+        // Shallow search with wider window
+        let (score, _) = negamax(board, eval_state, None, probcut_depth, probcut_beta - 1, probcut_beta, ply + 1, false, time_manager);
+        let score = -score;
+        
+        if STOP_SEARCH.load(Ordering::Relaxed) { return (0, None); }
+        
+        if score >= probcut_beta {
+            return (beta, None); // Probable beta cutoff
         }
     }
     
@@ -545,8 +622,8 @@ fn negamax(
     if tt_move.is_none() && depth >= 6 {
          let iid_depth = depth - 2;
          // We ignore result, just want to populate TT
-         let _ = negamax(board, eval_state, prev_move, iid_depth, alpha, beta, ply, null_ok);
-
+         let _ = negamax(board, eval_state, prev_move, iid_depth, alpha, beta, ply, null_ok, time_manager);
+         
          // Re-probe TT to get the move we just found
          if let Some((entry, _)) = tt_probe(hash) {
              tt_move = decode_move(entry.best_move, board);
@@ -578,15 +655,20 @@ fn negamax(
                         // Search all OTHER moves at reduced depth
                         // If they all fail low, TT move is singular
                         let mut is_singular = true;
-                        for other_mv in MoveGen::new_legal(board) {
+                        // Optimization: Don't generate all moves, just iterate
+                        let mut gen = MoveGen::new_legal(board);
+                        for other_mv in gen {
                             if other_mv == tt_mv { continue; }
                             
                             let new_board = board.make_move_new(other_mv);
                             let mut new_eval = eval_state;
                             new_eval.apply_move(board, other_mv);
                             let se_depth = depth / 2;
-                            let (score, _) = negamax(&new_board, new_eval, Some(other_mv), se_depth, -se_beta, -se_beta + 1, ply + 1, false);
+                            // Null window search for singular extension check
+                            let (score, _) = negamax(&new_board, new_eval, Some(other_mv), se_depth, -se_beta, -se_beta + 1, ply + 1, false, time_manager);
                             let score = -score;
+                            
+                            if STOP_SEARCH.load(Ordering::Relaxed) { return (0, None); }
                             
                             if score >= se_beta {
                                 // Found a move that's also good - not singular
@@ -608,8 +690,10 @@ fn negamax(
             
             // Full window search for first move (with possible extension)
             let search_depth = (depth - 1).saturating_add(extension);
-            let (score, _) = negamax(&new_board, new_eval, Some(tt_mv), search_depth, -beta, -alpha, ply + 1, true);
+            let (score, _) = negamax(&new_board, new_eval, Some(tt_mv), search_depth, -beta, -alpha, ply + 1, true, time_manager);
             let score = -score;
+            
+            if STOP_SEARCH.load(Ordering::Relaxed) { return (0, None); }
             
             if score > best_score {
                 best_score = score;
@@ -728,55 +812,65 @@ fn negamax(
         let gives_check = *new_board.checkers() != chess::EMPTY;
         
         // ==========================================
-        // LATE MOVE REDUCTIONS (LMR) - Very aggressive
+        // LATE MOVE REDUCTIONS (LMR)
         // ==========================================
         let mut reduction = 0u8;
         if i >= 2 && depth >= 2 && !is_capture && !gives_check && !in_check {
-            // Conservative logarithmic reduction (divisor 2.5 for better tactics)
-            let base_reduction = ((depth as f32).ln() * ((i + 1) as f32).ln() / 2.5) as u8;
-            reduction = base_reduction.min(depth - 1).max(1);
+            // Logarithmic reduction formula: R = 1 + ln(depth) * ln(i) / 2
+            // This is standard in Ethereal, Stockfish, etc.
+            let base_reduction = 1.0 + (depth as f32).ln() * ((i) as f32).ln() / 2.0;
+            reduction = base_reduction as u8;
             
-            // Extra reduction for very late moves
-            if i >= 6 {
-                reduction += 1;
+            // Adjust based on history: if move is historically bad, reduce MORE
+            // History ranges 0..10000. 
+            // Good move (>5000) -> reduce less. Bad move (<2000) -> reduce more.
+            let from = mv.get_source().to_index();
+            let to = mv.get_dest().to_index();
+            let hist_score = HISTORY.with(|h| h.borrow()[from][to]);
+            
+            if hist_score > 8000 {
+                reduction = reduction.saturating_sub(1);
+            } else if hist_score < 1000 {
+                reduction = reduction.saturating_add(1);
             }
             
-            // Reduce less in endgame
-            if is_endgame && reduction > 1 {
-                reduction -= 1;
-            }
+            // Safety
+            reduction = reduction.min(depth - 1).max(0);
         }
         
         // ==========================================
         // PRINCIPAL VARIATION SEARCH (PVS)
         // Search first move with full window, others with null window
         // ==========================================
-        // Calculate new depth - CRITICAL: Use saturating_sub to prevent u8 underflow!
-        // Before this fix, depth - 1 - reduction could wrap to 255, causing infinite search!
         let new_depth = (depth as i16 - 1 - reduction as i16).max(0) as u8;
         let mut score;
         
         if i == 0 {
             // First move: full window search
-            let (s, _) = negamax(&new_board, new_eval, Some(mv), new_depth, -beta, -alpha, ply + 1, true);
+            let (s, _) = negamax(&new_board, new_eval, Some(mv), new_depth, -beta, -alpha, ply + 1, true, time_manager);
             score = -s;
         } else {
             // Null window search (scout)
-            let (s, _) = negamax(&new_board, new_eval, Some(mv), new_depth, -alpha - 1, -alpha, ply + 1, true);
+            let (s, _) = negamax(&new_board, new_eval, Some(mv), new_depth, -alpha - 1, -alpha, ply + 1, true, time_manager);
             score = -s;
+            
+            if STOP_SEARCH.load(Ordering::Relaxed) { return (0, None); }
             
             // Re-search with full window if it improved alpha
             if score > alpha && score < beta {
-                let (s, _) = negamax(&new_board, new_eval, Some(mv), new_depth, -beta, -alpha, ply + 1, true);
+                let (s, _) = negamax(&new_board, new_eval, Some(mv), new_depth, -beta, -alpha, ply + 1, true, time_manager);
                 score = -s;
             }
         }
         
         // Re-search if LMR reduced search looks good
         if reduction > 0 && score > alpha {
-            let (rescore, _) = negamax(&new_board, new_eval, Some(mv), depth - 1, -beta, -alpha, ply + 1, true);
+            // Full depth search
+            let (rescore, _) = negamax(&new_board, new_eval, Some(mv), depth - 1, -beta, -alpha, ply + 1, true, time_manager);
             score = -rescore;
         }
+        
+        if STOP_SEARCH.load(Ordering::Relaxed) { return (0, None); }
         
         if score >= beta {
             // Store killer move and update history (only quiet moves)
@@ -829,13 +923,17 @@ fn negamax(
 
 /// Iterative deepening search with aspiration windows
 /// aggressiveness: 1-10, higher = more pruning = faster but riskier
-pub fn iterative_deepening(board: &Board, max_depth: u8, aggressiveness: u8) -> (Option<ChessMove>, i32) {
+pub fn iterative_deepening(
+    board: &Board, 
+    max_depth: u8, 
+    aggressiveness: u8,
+    wtime: Option<u64>,
+    btime: Option<u64>,
+    movestogo: Option<u64>
+) -> (Option<ChessMove>, i32) {
     // Set aggressiveness for this search
     AGGRESSIVENESS.with(|a| a.set(aggressiveness));
     
-    // Note: Fixed-size TT doesn't need explicit clearing - depth-preferred
-    // replacement naturally handles aging. Only clear if we want fresh start.
-    // tt_clear(); // Uncomment if needed
     reset_node_counts();  // Reset node counters for this search
     KILLERS.with(|k| *k.borrow_mut() = [[None; 2]; 64]);
     // Age history table instead of clearing (keeps some knowledge)
@@ -847,6 +945,9 @@ pub fn iterative_deepening(board: &Board, max_depth: u8, aggressiveness: u8) -> 
             }
         }
     });
+    
+    // Initialize Time Manager
+    let time_manager = TimeManager::new(wtime, btime, movestogo, board.side_to_move());
     
     if is_debug() {
         eprintln!("[DEBUG] iterative_deepening: starting max_depth={} aggr={}", max_depth, aggressiveness);
@@ -863,49 +964,48 @@ pub fn iterative_deepening(board: &Board, max_depth: u8, aggressiveness: u8) -> 
             eprintln!("[DEBUG] ID: starting depth {}/{}", depth, max_depth);
         }
         
+        // Check time before starting new depth
+        if let Some(tm) = time_manager {
+            // If we already used > 50% of time, don't start new depth
+            // unless depth is very low
+            if depth > 4 && tm.start_time.elapsed().as_millis() > tm.allocated_time / 2 {
+                break;
+            }
+        }
+        
         // Aspiration window search
         let window = 50; // Start with narrow window
         let alpha = if depth > 1 { best_score - window } else { -INFINITY };
         let beta = if depth > 1 { best_score + window } else { INFINITY };
         
-        if is_debug() && depth > 1 {
-            eprintln!("[DEBUG] ID: aspiration window [{}, {}]", alpha, beta);
-        }
+        let (mut score, mut mv) = negamax(board, root_eval, None, depth, alpha, beta, 0, true, time_manager);
         
-        let (mut score, mut mv) = negamax(board, root_eval, None, depth, alpha, beta, 0, true);
-        
-        if is_debug() {
-            eprintln!("[DEBUG] ID: depth {} search returned score={} mv={:?}", depth, score, mv);
+        // If search was stopped by time, break and return previous best
+        if STOP_SEARCH.load(Ordering::Relaxed) {
+            break;
         }
         
         // Re-search with wider window if score is outside bounds
         if score <= alpha || score >= beta {
-            if is_debug() {
-                eprintln!("[DEBUG] ID: ASPIRATION FAIL! score={} outside [{}, {}], re-searching...", score, alpha, beta);
-            }
             // Score outside aspiration window, re-search with full window
-            let result = negamax(board, root_eval, None, depth, -INFINITY, INFINITY, 0, true);
+            let result = negamax(board, root_eval, None, depth, -INFINITY, INFINITY, 0, true, time_manager);
             score = result.0;
             mv = result.1;
-            if is_debug() {
-                eprintln!("[DEBUG] ID: re-search returned score={} mv={:?}", score, mv);
+            
+            if STOP_SEARCH.load(Ordering::Relaxed) {
+                break;
             }
         }
         
         if let Some(m) = mv {
             best_move = Some(m);
             best_score = score;
-            if is_debug() {
-                eprintln!("[DEBUG] ID: depth {} complete, best={} score={}", depth, m, score);
-            }
         }
         
         // Print NPS info for last depth (diagnostics)
-        if depth == max_depth {
-            let (nodes, qnodes) = get_node_counts();
-            eprintln!("info depth {} nodes {} qnodes {} total {}", 
-                depth, nodes, qnodes, nodes + qnodes);
-        }
+        let (nodes, qnodes) = get_node_counts();
+        eprintln!("info depth {} nodes {} qnodes {} total {}", 
+            depth, nodes, qnodes, nodes + qnodes);
     }
     
     (best_move, best_score)
@@ -913,9 +1013,17 @@ pub fn iterative_deepening(board: &Board, max_depth: u8, aggressiveness: u8) -> 
 
 /// Parallel search at root level using rayon with ITERATIVE DEEPENING
 /// Without ID, jumping straight to depth 12+ with empty TT = brute force = death
-pub fn parallel_root_search(board: &Board, max_depth: u8, aggressiveness: u8) -> (Option<ChessMove>, i32) {
+pub fn parallel_root_search(
+    board: &Board, 
+    max_depth: u8, 
+    aggressiveness: u8,
+    wtime: Option<u64>,
+    btime: Option<u64>,
+    movestogo: Option<u64>
+) -> (Option<ChessMove>, i32) {
     AGGRESSIVENESS.with(|a| a.set(aggressiveness));
     KILLERS.with(|k| *k.borrow_mut() = [[None; 2]; 64]);
+    reset_node_counts();
     
     let moves: Vec<ChessMove> = MoveGen::new_legal(board).collect();
     if moves.is_empty() {
@@ -925,11 +1033,18 @@ pub fn parallel_root_search(board: &Board, max_depth: u8, aggressiveness: u8) ->
     let mut best_move = None;
     let mut best_score = 0;
     
+    let time_manager = TimeManager::new(wtime, btime, movestogo, board.side_to_move());
+    
     // Initialize incremental eval state for root position
     let root_eval = eval::EvalState::new(board);
     
     // ITERATIVE DEEPENING LOOP (Critical for Move Ordering!)
     for depth in 1..=max_depth {
+        // Check time
+        if let Some(tm) = time_manager {
+            if tm.check_time() { break; }
+        }
+        
         let mut current_best_move = moves[0];
         let mut current_best_score = -INFINITY;
         
@@ -937,13 +1052,29 @@ pub fn parallel_root_search(board: &Board, max_depth: u8, aggressiveness: u8) ->
         let results: Vec<(ChessMove, i32)> = moves
             .par_iter()
             .map(|&mv| {
+                if STOP_SEARCH.load(Ordering::Relaxed) {
+                    return (mv, -INFINITY);
+                }
+                
+                // Thread-local time check
+                if let Some(tm) = time_manager {
+                    if tm.check_time() {
+                        STOP_SEARCH.store(true, Ordering::Relaxed);
+                        return (mv, -INFINITY);
+                    }
+                }
+                
                 let new_board = board.make_move_new(mv);
                 let mut new_eval = root_eval;
                 new_eval.apply_move(board, mv);
-                let (score, _) = negamax(&new_board, new_eval, Some(mv), depth - 1, -INFINITY, INFINITY, 1, true);
+                let (score, _) = negamax(&new_board, new_eval, Some(mv), depth - 1, -INFINITY, INFINITY, 1, true, time_manager);
                 (mv, -score)
             })
             .collect();
+            
+        if STOP_SEARCH.load(Ordering::Relaxed) {
+            break;
+        }
         
         // Find best move at this depth
         for (mv, score) in results {
