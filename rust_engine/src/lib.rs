@@ -1,12 +1,12 @@
-use pyo3::prelude::*;
-use std::sync::OnceLock;
-
-mod search;
-mod eval;
+pub mod search;
+pub mod eval;
 mod book;
+pub mod movegen;
 
 use chess::{Board, MoveGen};
 use std::str::FromStr;
+use std::sync::OnceLock;
+use pyo3::prelude::*;
 
 // Global book instance (loaded once)
 static BOOK: OnceLock<Option<book::OpeningBook>> = OnceLock::new();

@@ -5,7 +5,7 @@ edition = "2021"
 
 [lib]
 name = "rust_engine"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 pyo3 = { version = "0.22", features = ["extension-module"] }
@@ -13,6 +13,14 @@ chess = "3.2"
 shakmaty = "0.27"
 rand = "0.8"
 rayon = "1.10"
+
+[[bin]]
+name = "uci"
+path = "src/bin/uci.rs"
+
+[[bin]]
+name = "tuner"
+path = "src/bin/tuner.rs"
 
 [profile.release]
 lto = true
