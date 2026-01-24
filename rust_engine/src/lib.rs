@@ -19,9 +19,19 @@ fn get_book() -> &'static Option<book::OpeningBook> {
 /// First checks opening book, then falls back to search
 /// aggressiveness: 1-10, higher = more pruning = faster but riskier
 /// use_parallel: if true, use multi-threaded search (faster on multi-core)
+/// wtime/btime: time left in ms
+/// movestogo: moves to go
 #[pyfunction]
-#[pyo3(signature = (fen, depth, aggressiveness=5, use_parallel=false))]
-fn get_best_move(fen: &str, depth: u8, aggressiveness: u8, use_parallel: bool) -> PyResult<String> {
+#[pyo3(signature = (fen, depth, aggressiveness=5, use_parallel=false, wtime=None, btime=None, movestogo=None))]
+fn get_best_move(
+    fen: &str, 
+    depth: u8, 
+    aggressiveness: u8, 
+    use_parallel: bool,
+    wtime: Option<u64>,
+    btime: Option<u64>,
+    movestogo: Option<u64>
+) -> PyResult<String> {
     let board = Board::from_str(fen).map_err(|e| {
         PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid FEN: {}", e))
     })?;
@@ -41,10 +51,10 @@ fn get_best_move(fen: &str, depth: u8, aggressiveness: u8, use_parallel: bool) -
     
     let (best_move, _score) = if use_parallel && depth >= 6 {
         // Use parallel search for higher depths
-        search::parallel_root_search(&board, depth, aggr)
+        search::parallel_root_search(&board, depth, aggr, wtime, btime, movestogo)
     } else {
         // Use regular iterative deepening
-        search::iterative_deepening(&board, depth, aggr)
+        search::iterative_deepening(&board, depth, aggr, wtime, btime, movestogo)
     };
     
     match best_move {
