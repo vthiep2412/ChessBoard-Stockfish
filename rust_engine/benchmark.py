@@ -12,6 +12,24 @@ import re
 # Add the target directory to path for the compiled module
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'target', 'release'))
 
+# ANSI Color Codes
+class Colors:
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+def colorize(text, color):
+    """Wrap text in color codes if supported"""
+    if sys.platform == 'win32':
+        os.system('color')  # Enable ANSI support in Windows console
+    return f"{color}{text}{Colors.ENDC}"
+
 # Stockfish path for move validation
 STOCKFISH_PATH = r"c:\Users\vthie\.VScode\Project App\Chess\engines\stockfish-avx2.exe"
 
@@ -20,9 +38,9 @@ try:
     # CRITICAL: Clear poisoned TT entries from previous crashed/failed searches!
     # Without this, the engine reads garbage and gets stuck in infinite loops
     rust_engine.clear_tt()
-    print("  TT cleared - ready for fresh benchmark")
+    print(colorize("  ✓ TT cleared - ready for fresh benchmark", Colors.GREEN))
 except ImportError:
-    print("ERROR: rust_engine module not found!")
+    print(colorize("ERROR: rust_engine module not found!", Colors.RED))
     print("Make sure to run: cargo build --release")
     print("Or run: maturin develop --release")
     sys.exit(1)
@@ -84,11 +102,13 @@ TEST_POSITIONS = [
 # Benchmark Functions
 # ============================================
 
-def benchmark_position(name: str, fen: str, depth: int = 10) -> dict:
+DEPTH_BENCH = 16 #anti magic number
+
+def benchmark_position(name: str, fen: str, depth: int = DEPTH_BENCH) -> dict:
     """Benchmark a single position at given depth"""
-    print(f"  Testing: {name} @ depth {depth}...", flush=True)
-    print(f"    [DEBUG] FEN: {fen}", flush=True)
-    print(f"    [DEBUG] Calling rust_engine.get_best_move()...", flush=True)
+    print(f"  Testing: {colorize(name, Colors.CYAN)} @ depth {depth}...", flush=True)
+    # print(f"    [DEBUG] FEN: {fen}", flush=True)
+    # print(f"    [DEBUG] Calling rust_engine.get_best_move()...", flush=True)
     sys.stdout.flush()
     
     start = time.perf_counter()
@@ -105,7 +125,7 @@ def benchmark_position(name: str, fen: str, depth: int = 10) -> dict:
         return {"name": name, "error": str(e)}
     
     elapsed = time.perf_counter() - start
-    print(f"    [DEBUG] Returned in {elapsed:.2f}s: {best_move}", flush=True)
+    # print(f"    [DEBUG] Returned in {elapsed:.2f}s: {best_move}", flush=True)
     
     # Get node counts from the search
     nodes, qnodes = rust_engine.get_node_counts()
@@ -126,7 +146,7 @@ def benchmark_position(name: str, fen: str, depth: int = 10) -> dict:
         "nps": nps,
     }
 
-def get_stockfish_top_moves(fen: str, depth: int = 10, num_moves: int = 5) -> list:
+def get_stockfish_top_moves(fen: str, depth: int = DEPTH_BENCH, num_moves: int = 5) -> list:
     """Get Stockfish's top N moves for a position using MultiPV"""
     try:
         proc = subprocess.Popen(
@@ -209,9 +229,11 @@ def get_stockfish_top_moves(fen: str, depth: int = 10, num_moves: int = 5) -> li
 
 def run_nps_test(depth: int = 12) -> None:
     """Run NPS benchmark on all test positions with Stockfish validation"""
-    print("\n" + "="*50)
-    print(f"  NPS Benchmark (depth {depth}) + Move Quality Check")
-    print("="*50)
+    print("\n" + colorize("="*60, Colors.BLUE))
+    print(colorize(f"  NPS Benchmark (depth {depth}) + Move Quality Check", Colors.BOLD))
+    print(colorize("="*60, Colors.BLUE))
+    print(f"{'Position':<20} {'Time':<10} {'Nodes':<10} {'NPS':<10} {'Move':<8} {'Quality':<10}")
+    print("-" * 75)
     
     total_time = 0
     results = []
@@ -254,44 +276,52 @@ def run_nps_test(depth: int = 12) -> None:
         nps_str = f"{result['nps']/1000:.0f}k" if result['nps'] < 1000000 else f"{result['nps']/1000000:.1f}M"
         nodes_str = f"{(result['nodes']+result['qnodes'])/1000:.0f}k"
         
-        sf_display = ", ".join(sf_moves[:3]) if sf_moves else "?"
+        time_color = Colors.GREEN if result['time_ms'] < 1000 else (Colors.YELLOW if result['time_ms'] < 3000 else Colors.RED)
+        move_color = Colors.GREEN if quality_hits > quality_total - 1 else Colors.ENDC # Highlight latest if good
         
-        print(f"    [{quality_mark:3s}] {our_move:6s} {result['time_ms']:8.1f}ms  {nodes_str:>6s} nodes  {nps_str:>5s}/s  SF:[{sf_display}]")
+        sf_display = ", ".join(sf_moves[:3]) if sf_moves else "?"
+        quality_display = colorize(quality_mark, Colors.GREEN if "★" in quality_mark else Colors.RED)
+        
+        print(f"  {name:<18} {colorize(f'{result['time_ms']:6.0f}ms', time_color)} {nodes_str:<9} {colorize(f'{nps_str:<9}', Colors.CYAN)} {colorize(f'{our_move:<7}', Colors.BOLD)} {quality_display} (SF: {sf_display})")
+        
+        # Add slight spacing for readability
+        # print("")
     
-    print("-"*50)
-    print(f"  Total time: {total_time:.1f}ms for {len(TEST_POSITIONS)} positions")
-    print(f"  Average: {total_time/len(TEST_POSITIONS):.1f}ms per position")
-    print(f"  Move Quality: {quality_hits}/{quality_total} in Stockfish top 5")
+    print("-" * 75)
+    print(f"  Total time:   {colorize(f'{total_time:.1f}ms', Colors.BOLD)} for {len(TEST_POSITIONS)} positions")
+    print(f"  Avg per pos:  {colorize(f'{total_time/len(TEST_POSITIONS):.1f}ms', Colors.BOLD)}")
+    print(f"  Move Quality: {colorize(f'{quality_hits}/{quality_total}', Colors.GREEN if quality_hits > quality_total*0.7 else Colors.YELLOW)}")
     
     # Quality score rating
     quality_pct = (quality_score / max_quality_score) * 100 if max_quality_score > 0 else 0
-    print(f"  Quality Score: {quality_score}/{max_quality_score} ({quality_pct:.1f}%)")
+    score_color = Colors.GREEN if quality_pct > 80 else (Colors.YELLOW if quality_pct > 50 else Colors.RED)
+    print(f"  Quality Score: {colorize(f'{quality_score}/{max_quality_score} ({quality_pct:.1f}%)', score_color)}")
     
     # Rating based on score
     if quality_pct >= 90:
-        rating = "★★★★★ GRANDMASTER"
+        rating = colorize("★★★★★ GRANDMASTER", Colors.GREEN + Colors.BOLD)
     elif quality_pct >= 80:
-        rating = "★★★★☆ MASTER"
+        rating = colorize("★★★★☆ MASTER", Colors.GREEN)
     elif quality_pct >= 70:
-        rating = "★★★☆☆ EXPERT"
+        rating = colorize("★★★☆☆ EXPERT", Colors.CYAN)
     elif quality_pct >= 60:
-        rating = "★★☆☆☆ ADVANCED"
+        rating = colorize("★★☆☆☆ ADVANCED", Colors.BLUE)
     elif quality_pct >= 50:
-        rating = "★☆☆☆☆ INTERMEDIATE"
+        rating = colorize("★☆☆☆☆ INTERMEDIATE", Colors.YELLOW)
     else:
-        rating = "☆☆☆☆☆ BEGINNER"
+        rating = colorize("☆☆☆☆☆ BEGINNER", Colors.RED)
     
     print(f"  Rating: {rating}")
     
     if quality_hits < quality_total // 2:
-        print("  ⚠ WARNING: Less than 50% of moves match Stockfish top 5!")
+        print(colorize("  ⚠ WARNING: Less than 50% of moves match Stockfish top 5!", Colors.RED))
     
 
 def run_depth_scaling_test() -> None:
     """Test how performance scales with depth"""
-    print("\n" + "="*50)
-    print("  Depth Scaling Test (startpos)")
-    print("="*50)
+    print("\n" + colorize("="*60, Colors.BLUE))
+    print(colorize("  Depth Scaling Test (startpos)", Colors.BOLD))
+    print(colorize("="*60, Colors.BLUE))
     
     fen = TEST_POSITIONS[0][1]  # Starting position
     
@@ -303,7 +333,7 @@ def run_depth_scaling_test() -> None:
         # Estimate nodes (rough approximation)
         estimated_nps = 35 ** (depth * 0.4) / elapsed if elapsed > 0.001 else 0
         
-        print(f"  Depth {depth:2d}: {elapsed*1000:8.1f}ms  Move: {move}")
+        print(f"  Depth {depth:2d}: {colorize(f'{elapsed*1000:8.1f}ms', Colors.YELLOW)}  Move: {colorize(move, Colors.CYAN)}")
         
         # Stop if taking too long
         if elapsed > 30:
@@ -311,11 +341,11 @@ def run_depth_scaling_test() -> None:
             break
 
 
-def run_parallel_vs_serial_test(depth: int = 10) -> None:
+def run_parallel_vs_serial_test(depth: int = DEPTH_BENCH) -> None:
     """Compare parallel vs serial search"""
-    print("\n" + "="*50)
-    print(f"  Parallel vs Serial Test (depth {depth})")
-    print("="*50)
+    print("\n" + colorize("="*60, Colors.BLUE))
+    print(colorize(f"  Parallel vs Serial Test (depth {depth})", Colors.BOLD))
+    print(colorize("="*60, Colors.BLUE))
     
     fen = TEST_POSITIONS[2][1]  # kasparov_topalov - complex position
     
@@ -337,14 +367,14 @@ def run_parallel_vs_serial_test(depth: int = 10) -> None:
     
     print(f"  Serial:   {time_serial*1000:8.1f}ms  Move: {move_serial}  Nodes: {(nodes_s+qnodes_s)/1000:.0f}k")
     print(f"  Parallel: {time_parallel*1000:8.1f}ms  Move: {move_parallel}  Nodes: {(nodes_p+qnodes_p)/1000:.0f}k")
-    print(f"  Speedup:  {speedup:.2f}x")
+    print(f"  Speedup:  {colorize(f'{speedup:.2f}x', Colors.GREEN if speedup > 1.5 else Colors.YELLOW)}")
 
 
 def run_correctness_test() -> None:
     """Basic correctness checks"""
-    print("\n" + "="*50)
-    print("  Correctness Test")
-    print("="*50)
+    print("\n" + colorize("="*60, Colors.BLUE))
+    print(colorize("  Correctness Test", Colors.BOLD))
+    print(colorize("="*60, Colors.BLUE))
     
     tests_passed = 0
     tests_total = 0
@@ -354,35 +384,37 @@ def run_correctness_test() -> None:
     moves = rust_engine.get_legal_moves(fen)
     tests_total += 1
     if len(moves) == 20:
-        print("  ✓ Starting position has 20 legal moves")
+        print(colorize("  ✓ Starting position has 20 legal moves", Colors.GREEN))
         tests_passed += 1
     else:
-        print(f"  ✗ Starting position: expected 20 moves, got {len(moves)}")
+        print(colorize(f"  ✗ Starting position: expected 20 moves, got {len(moves)}", Colors.RED))
     
     # Test 2: Evaluation is reasonable
     tests_total += 1
     eval_score = rust_engine.evaluate(fen)
     if -50 < eval_score < 50:  # Should be approximately equal
-        print(f"  ✓ Starting eval is balanced: {eval_score}")
+        print(colorize(f"  ✓ Starting eval is balanced: {eval_score}", Colors.GREEN))
         tests_passed += 1
     else:
-        print(f"  ✗ Starting eval seems off: {eval_score}")
+        print(colorize(f"  ✗ Starting eval seems off: {eval_score}", Colors.RED))
     
     # Test 3: Mate in 1
     mate_fen = "k7/8/1K6/8/8/8/8/7R w - - 0 1"
     move = rust_engine.get_best_move(mate_fen, 2, 5, False)
     tests_total += 1
     if move == "h1a1" or move == "h1h8":
-        print(f"  ✓ Found mate in 1: {move}")
+        print(colorize(f"  ✓ Found mate in 1: {move}", Colors.GREEN))
         tests_passed += 1
     else:
-        print(f"  ? Mate in 1 result: {move} (checking...)")
+        print(colorize(f"  ? Mate in 1 result: {move} (checking...)", Colors.YELLOW))
         tests_passed += 1  # May still be valid
     
     # Test 4: Book move detection (if book exists)
     tests_total += 1
     has_book = rust_engine.has_book_move(fen)
-    print(f"  {'✓' if has_book else '○'} Opening book: {'available' if has_book else 'not loaded'}")
+    book_status = "available" if has_book else "not loaded"
+    color = Colors.GREEN if has_book else Colors.YELLOW
+    print(colorize(f"  {'✓' if has_book else '○'} Opening book: {book_status}", color))
     tests_passed += 1
     
     print("-"*50)
@@ -394,9 +426,9 @@ def run_correctness_test() -> None:
 # ============================================
 
 def main():
-    print("\n" + "="*50)
-    print("  RUST CHESS ENGINE BENCHMARK SUITE")
-    print("="*50)
+    print("\n" + colorize("="*60, Colors.BLUE))
+    print(colorize("  RUST CHESS ENGINE BENCHMARK SUITE", Colors.HEADER + Colors.BOLD))
+    print(colorize("="*60, Colors.BLUE))
     
     # Parse arguments
     depth = 10
@@ -412,9 +444,9 @@ def main():
     run_depth_scaling_test()
     run_parallel_vs_serial_test(depth)
     
-    print("\n" + "="*50)
-    print("  Benchmark Complete!")
-    print("="*50 + "\n")
+    print("\n" + colorize("="*60, Colors.BLUE))
+    print(colorize("  Benchmark Complete!", Colors.BOLD + Colors.GREEN))
+    print(colorize("="*60, Colors.BLUE) + "\n")
 
 
 if __name__ == "__main__":
