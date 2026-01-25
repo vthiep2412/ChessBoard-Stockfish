@@ -161,22 +161,13 @@ impl Iterator for StagedMoveGen {
                      if k_idx < 2 {
                          if let Some(km) = self.killers[k_idx] {
                              // Must be legal, quiet, and not TT move
-                             if km != self.tt_move.unwrap_or_default() {
-                                // Safe check for killer move destination being empty
-                                // Access bitboard properly via iteration or mask
-                                // chess crate BitBoard is opaque mostly, but targets is a BitBoard
-                                let targets = !self.board.color_combined(!self.board.side_to_move());
-                                // We want to check if dest is in targets (which are empty/quiet squares)
-                                // BitBoard doesn't have get_unchecked or get usually publicly exposed nicely
-                                // But we can convert square to BitBoard and AND
-                                let dest_bb = chess::BitBoard::from_square(km.get_dest());
-                                if (targets & dest_bb) == dest_bb {
-                                    // It is a quiet move (dest is empty)
-                                     if chess::MoveGen::new_legal(&self.board).any(|m| m == km)
-                                     {
-                                         return Some(km);
-                                     }
-                                }
+                             if km != self.tt_move.unwrap_or_default()
+                                // Check for quiet move: destination must be empty
+                                && self.board.piece_on(km.get_dest()).is_none()
+                                // Verify legality
+                                && chess::MoveGen::new_legal(&self.board).any(|m| m == km)
+                             {
+                                 return Some(km);
                              }
                          }
                          continue; // Check next killer

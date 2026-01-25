@@ -281,7 +281,7 @@ fn eval_king_safety(board: &Board, color: Color) -> i32 {
 }
 
 /// Main evaluation function
-pub fn evaluate_with_state(board: &Board, state: &EvalState, _alpha: i32, _beta: i32) -> i32 {
+pub fn evaluate_with_state(board: &Board, state: &EvalState, alpha: i32, beta: i32) -> i32 {
     let us = board.side_to_move();
     let them = !us;
 
@@ -292,12 +292,19 @@ pub fn evaluate_with_state(board: &Board, state: &EvalState, _alpha: i32, _beta:
     let mut score_mg = state.mg_material[us.to_index()] - state.mg_material[them.to_index()];
     let mut score_eg = state.eg_material[us.to_index()] - state.eg_material[them.to_index()];
     
-    // Evaluation Logic
-    // Positive = Good for Side To Move (Relative)
-    // But `evaluate` usually returns absolute score from White perspective or relative?
-    // Rust chess convention: usually relative. But my `negamax` assumes relative.
-    // However, material array is [White, Black].
-    // So score_mg is (Us - Them). This is relative.
+    // Lazy Evaluation (Fast Path)
+    // If material score is significantly outside alpha/beta, return early
+    const LAZY_MARGIN: i32 = 150;
+    let stand_pat = (score_mg * mg_weight + score_eg * eg_weight) / 24;
+
+    if stand_pat - LAZY_MARGIN >= beta {
+        return stand_pat;
+    }
+    if stand_pat + LAZY_MARGIN <= alpha {
+        return stand_pat;
+    }
+
+    // Full Evaluation (Pawns, Mobility, Safety)
     
     // Pawn Structure
     let pawns_us = eval_pawns(board, us);
@@ -374,18 +381,22 @@ pub fn mvv_lva_score(board: &Board, mv: chess::ChessMove) -> i32 {
     v_val * 10 - a_val
 }
 
-// Static Exchange Evaluation (SEE)
+// Static Exchange Evaluation (SEE) - LVA Approximation
 pub fn see(board: &Board, mv: chess::ChessMove) -> i32 {
-    // Placeholder for SEE (complex)
-    // If capture, return value. If quiet, return 0.
-    if is_capture(board, mv) {
-        let victim = board.piece_on(mv.get_dest()).unwrap_or(Piece::Pawn);
-        let v_val = match victim {
+    if !is_capture(board, mv) {
+        return 0;
+    }
+
+    let victim = board.piece_on(mv.get_dest()).unwrap_or(Piece::Pawn);
+    let attacker = board.piece_on(mv.get_source()).unwrap_or(Piece::Pawn);
+
+    fn piece_val(p: Piece) -> i32 {
+        match p {
             Piece::Pawn => 100, Piece::Knight => 320, Piece::Bishop => 330,
             Piece::Rook => 500, Piece::Queen => 900, Piece::King => 20000,
-        };
-        v_val // Very dumb SEE
-    } else {
-        0
+        }
     }
+
+    // Simple LVA: Victim - Attacker (Optimistic)
+    piece_val(victim) - piece_val(attacker)
 }
