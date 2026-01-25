@@ -1,5 +1,6 @@
 use std::io::{self, BufRead};
 use std::fs::File;
+use std::path::PathBuf;
 use rust_engine::eval;
 use chess::Board;
 use std::str::FromStr;
@@ -10,15 +11,18 @@ fn main() -> io::Result<()> {
     // 2. Calculate error (Sigmoid(eval) - result)^2
     // 3. This script just calculates total error for now
 
-    let path = "tuning_data.epd";
-    let file = File::open(path);
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
+    let path = PathBuf::from(manifest_dir).join("tuning_data.epd");
 
-    if let Err(_) = file {
-        println!("Could not open {}. Run generate_tuning.py first.", path);
-        return Ok(());
-    }
+    let file = match File::open(&path) {
+        Ok(f) => f,
+        Err(_) => {
+            println!("Could not open {}. Run generate_tuning.py first.", path.display());
+            return Ok(());
+        }
+    };
 
-    let reader = io::BufReader::new(file.unwrap());
+    let reader = io::BufReader::new(file);
     let mut total_error = 0.0;
     let mut count = 0;
 

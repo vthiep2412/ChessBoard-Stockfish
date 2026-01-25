@@ -219,9 +219,10 @@ thread_local! {
 }
 
 /// Counter-Move History: indexed by PREVIOUS move's [from][to]
+/// Optimized to use Heap allocation (Box) to avoid stack overflow with thread_local
 thread_local! {
-    pub static COUNTER_HISTORY: std::cell::RefCell<[[[[i16; 64]; 64]; 64]; 64]> =
-        std::cell::RefCell::new([[[[0; 64]; 64]; 64]; 64]);
+    pub static COUNTER_HISTORY: std::cell::RefCell<Box<[[[[i16; 64]; 64]; 64]; 64]>> =
+        std::cell::RefCell::new(Box::new([[[[0; 64]; 64]; 64]; 64]));
 }
 
 /// Aggressiveness level (1-10) for pruning - set by iterative_deepening
@@ -521,11 +522,28 @@ fn negamax(
     if !in_check && depth >= 5 && tt_move.is_some() {
         let probcut_beta = beta + 200;
         let probcut_depth = depth - 4;
-        let (score, _) = negamax(board, eval_state, None, probcut_depth, probcut_beta - 1, probcut_beta, ply + 1, false, time_manager);
-        let score = -score;
-        if STOP_SEARCH.load(Ordering::Relaxed) { return (0, None); }
-        if score >= probcut_beta {
-            return (beta, None);
+
+        // Search captures with reduced depth/window
+        let mut gen = MoveGen::new_legal(board);
+        let targets = board.color_combined(!board.side_to_move());
+        gen.set_iterator_mask(*targets);
+
+        for mv in gen {
+            // Only search if SEE >= 0 (simple check to avoid bad captures)
+            if eval::see(board, mv) < 0 { continue; }
+
+            let new_board = board.make_move_new(mv);
+            let mut new_eval = eval_state;
+            new_eval.apply_move(&new_board, mv);
+
+            let (score, _) = negamax(&new_board, new_eval, Some(mv), probcut_depth, -probcut_beta, -probcut_beta + 1, ply + 1, false, time_manager);
+            let score = -score;
+
+            if STOP_SEARCH.load(Ordering::Relaxed) { return (0, None); }
+
+            if score >= probcut_beta {
+                return (beta, Some(mv));
+            }
         }
     }
     

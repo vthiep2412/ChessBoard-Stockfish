@@ -371,7 +371,7 @@ pub fn is_capture(board: &Board, mv: chess::ChessMove) -> bool {
     // Check standard capture, promotion, or En Passant
     board.piece_on(mv.get_dest()).is_some()
     || mv.get_promotion().is_some()
-    || board.en_passant() == Some(mv.get_dest())
+    || (board.en_passant() == Some(mv.get_dest()) && board.piece_on(mv.get_source()) == Some(chess::Piece::Pawn))
 }
 
 pub fn mvv_lva_score(board: &Board, mv: chess::ChessMove) -> i32 {
