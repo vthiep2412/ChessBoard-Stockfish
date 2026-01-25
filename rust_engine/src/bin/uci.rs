@@ -150,16 +150,17 @@ fn main() {
             },
             "stop" => {
                 search::stop();
-                // We don't join here, just signal. The main loop continues.
-                // Wait, if we stop, should we clear the handle?
-                // The search thread will finish and print bestmove, then exit.
-                // If we don't join, the handle remains "active" in our variable.
-                // But `join` consumes the handle.
-                // If we implement proper management, we should probably join if we want to ensure it's done,
-                // but usually "stop" just signals, and the engine prints bestmove and becomes idle.
-                // The `go` block handles cleaning up the old handle before starting new.
+                if let Some(handle) = active_search_handle.take() {
+                    let _ = handle.join();
+                }
             },
-            "quit" => break,
+            "quit" => {
+                search::stop();
+                if let Some(handle) = active_search_handle.take() {
+                    let _ = handle.join();
+                }
+                break;
+            },
             _ => {}
         }
     }

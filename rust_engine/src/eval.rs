@@ -51,6 +51,7 @@ impl EvalState {
         };
         
         for sq in 0..64 {
+            // Safety: sq is 0..64, so it is a valid square index.
             let square = unsafe { Square::new(sq as u8) };
             if let Some(piece) = board.piece_on(square) {
                 let color = board.color_on(square).unwrap();
@@ -87,6 +88,7 @@ fn get_material(piece: Piece) -> (i32, i32) {
 pub fn game_phase(board: &Board) -> i32 {
     let mut phase = 0;
     for sq in 0..64 {
+         // Safety: sq is 0..64, so it is a valid square index.
          let square = unsafe { Square::new(sq as u8) };
          if let Some(piece) = board.piece_on(square) {
              phase += match piece {

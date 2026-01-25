@@ -18,7 +18,6 @@ pub struct StagedMoveGen {
     board: Board,
     tt_move: Option<ChessMove>,
     killers: [Option<ChessMove>; 2],
-    history_ptr: *const [[i32; 64]; 64], // Raw pointer to history to avoid borrow checker issues? No, let's use RefCell access
     stage: Stage,
     captures_buffer: Vec<ChessMove>,
     quiets_buffer: Vec<ChessMove>,
@@ -37,7 +36,6 @@ impl StagedMoveGen {
             board: *board,
             tt_move,
             killers,
-            history_ptr: std::ptr::null(), // Placeholder
             stage: Stage::TTMove,
             captures_buffer: Vec::with_capacity(16),
             quiets_buffer: Vec::with_capacity(32),
