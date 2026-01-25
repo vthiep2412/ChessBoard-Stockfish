@@ -131,6 +131,7 @@ fn rust_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_node_counts, m)?)?;
     m.add_function(wrap_pyfunction!(clear_tt, m)?)?;
     m.add_function(wrap_pyfunction!(set_debug, m)?)?;
+    m.add_function(wrap_pyfunction!(stop_search, m)?)?;
     Ok(())
 }
 

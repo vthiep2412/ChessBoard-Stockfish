@@ -574,7 +574,7 @@ fn negamax(
 
                         let new_board = board.make_move_new(other_mv);
                         let mut new_eval = eval_state;
-                        new_eval.apply_move(board, other_mv);
+                        new_eval.apply_move(&new_board, other_mv);
 
                         let (score, _) = negamax(&new_board, new_eval, Some(other_mv), se_depth, -se_beta, -se_beta + 1, ply + 1, false, time_manager);
                         let score = -score;
@@ -616,7 +616,7 @@ fn negamax(
         
         let new_board = board.make_move_new(mv);
         let mut new_eval = eval_state;
-        new_eval.apply_move(board, mv);
+        new_eval.apply_move(&new_board, mv);
         let gives_check = *new_board.checkers() != chess::EMPTY;
         
         let mut reduction = 0u8;
@@ -825,7 +825,7 @@ pub fn parallel_root_search(
                 
                 let new_board = board.make_move_new(mv);
                 let mut new_eval = root_eval;
-                new_eval.apply_move(board, mv);
+                new_eval.apply_move(&new_board, mv);
                 let (score, _) = negamax(&new_board, new_eval, Some(mv), depth - 1, -INFINITY, INFINITY, 1, true, time_manager);
                 (mv, -score)
             })

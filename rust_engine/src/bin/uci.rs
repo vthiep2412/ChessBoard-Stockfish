@@ -2,12 +2,13 @@ use std::io::{self, BufRead};
 use rust_engine::{search, eval};
 use chess::{Board, ChessMove, Color};
 use std::str::FromStr;
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
 fn main() {
     let stdin = io::stdin();
     let mut board = Board::default();
+    let mut active_search_handle: Option<JoinHandle<()>> = None;
 
     // UCI Loop
     for line in stdin.lock().lines() {
@@ -100,7 +101,13 @@ fn main() {
                 }
             },
             "go" => {
-                // Reset stop flag
+                // Stop and join any active search
+                search::stop();
+                if let Some(handle) = active_search_handle.take() {
+                    let _ = handle.join();
+                }
+
+                // Reset stop flag for new search
                 search::reset_node_counts();
 
                 // Parse time controls
@@ -124,7 +131,7 @@ fn main() {
                 let search_board = board.clone();
 
                 // Spawn search thread
-                thread::spawn(move || {
+                active_search_handle = Some(thread::spawn(move || {
                     let (best_move, _) = search::iterative_deepening(
                         &search_board,
                         depth,
@@ -139,19 +146,18 @@ fn main() {
                     } else {
                         println!("bestmove 0000");
                     }
-                });
+                }));
             },
             "stop" => {
-                // Signal search to stop
-                // We use the exposed search::set_debug method to access internals or just rely on atomic
-                // But wait, STOP_SEARCH is private in search.rs.
-                // We need a public method to set it.
-                // Let's assume we add `search::stop()` in search.rs or use existing mechanism.
-                // The plan said "uci.rs can set the rust_engine::search::STOP_SEARCH directly if exposed".
-                // If not exposed, I need to expose it.
-                // For now, I will use a placeholder and fix search.rs in next step if needed.
-                // Actually, I can write to search.rs to make it public or add a helper.
                 search::stop();
+                // We don't join here, just signal. The main loop continues.
+                // Wait, if we stop, should we clear the handle?
+                // The search thread will finish and print bestmove, then exit.
+                // If we don't join, the handle remains "active" in our variable.
+                // But `join` consumes the handle.
+                // If we implement proper management, we should probably join if we want to ensure it's done,
+                // but usually "stop" just signals, and the engine prints bestmove and becomes idle.
+                // The `go` block handles cleaning up the old handle before starting new.
             },
             "quit" => break,
             _ => {}

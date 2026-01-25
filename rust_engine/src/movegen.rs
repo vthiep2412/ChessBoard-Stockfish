@@ -92,6 +92,8 @@ impl StagedMoveGen {
 
         for m in gen {
             if Some(m) == self.tt_move { continue; }
+            // Skip EP captures (they are in the quiet mask because dest is empty, but are captures)
+            if Some(m.get_dest()) == self.board.en_passant() { continue; }
             self.quiets_buffer.push(m);
         }
 

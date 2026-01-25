@@ -327,7 +327,12 @@ pub fn evaluate_with_state(board: &Board, state: &EvalState, _alpha: i32, _beta:
 
 pub fn evaluate(board: &Board) -> i32 {
     let state = EvalState::new(board);
-    evaluate_with_state(board, &state, -30000, 30000)
+    let mut score = evaluate_with_state(board, &state, -30000, 30000);
+    // Public API expects White-relative score, but evaluate_with_state returns STM-relative
+    if board.side_to_move() == chess::Color::Black {
+        score = -score;
+    }
+    score
 }
 
 pub fn evaluate_lazy(board: &Board, _alpha: i32, _beta: i32) -> i32 {
@@ -347,7 +352,10 @@ pub fn evaluate_lazy(board: &Board, _alpha: i32, _beta: i32) -> i32 {
 
 // Helpers for Search
 pub fn is_capture(board: &Board, mv: chess::ChessMove) -> bool {
-    board.piece_on(mv.get_dest()).is_some() || mv.get_promotion().is_some() // Treat promo as "interesting"
+    // Check standard capture, promotion, or En Passant
+    board.piece_on(mv.get_dest()).is_some()
+    || mv.get_promotion().is_some()
+    || board.en_passant() == Some(mv.get_dest())
 }
 
 pub fn mvv_lva_score(board: &Board, mv: chess::ChessMove) -> i32 {
