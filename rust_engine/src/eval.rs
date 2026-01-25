@@ -152,8 +152,16 @@ fn eval_pawns(board: &Board, color: Color) -> i32 {
 
         // Isolated
         let mut neighbors = BitBoard::new(0);
-        if file.to_index() > 0 { neighbors |= file_bb(unsafe { Square::new((sq.to_index() - 1) as u8) }); }
-        if file.to_index() < 7 { neighbors |= file_bb(unsafe { Square::new((sq.to_index() + 1) as u8) }); }
+        let rank_idx = rank.to_index();
+        let file_idx = file.to_index();
+        if file_idx > 0 {
+            let s = unsafe { Square::new((rank_idx * 8 + (file_idx - 1)) as u8) };
+            neighbors |= file_bb(s);
+        }
+        if file_idx < 7 {
+            let s = unsafe { Square::new((rank_idx * 8 + (file_idx + 1)) as u8) };
+            neighbors |= file_bb(s);
+        }
 
         if (neighbors & pawns).0 == 0 {
             score += PAWN_ISOLATED;
@@ -181,8 +189,14 @@ fn eval_pawns(board: &Board, color: Color) -> i32 {
         // We can just use file_bb logic.
 
         let mut passed_mask = front;
-        if file.to_index() > 0 { passed_mask |= front_span(color, unsafe { Square::new((sq.to_index() - 1) as u8) }); }
-        if file.to_index() < 7 { passed_mask |= front_span(color, unsafe { Square::new((sq.to_index() + 1) as u8) }); }
+        if file_idx > 0 {
+            let s = unsafe { Square::new((rank_idx * 8 + (file_idx - 1)) as u8) };
+            passed_mask |= front_span(color, s);
+        }
+        if file_idx < 7 {
+            let s = unsafe { Square::new((rank_idx * 8 + (file_idx + 1)) as u8) };
+            passed_mask |= front_span(color, s);
+        }
 
         if (passed_mask & enemy_pawns).0 == 0 {
             // Passed!
@@ -232,7 +246,7 @@ fn eval_mobility(board: &Board, color: Color) -> i32 {
 
     // Queens
     for sq in board.pieces(Piece::Queen) & us {
-        let moves = chess::get_bishop_moves(sq, occ) ^ chess::get_rook_moves(sq, occ);
+        let moves = chess::get_bishop_moves(sq, occ) | chess::get_rook_moves(sq, occ);
         let safe = moves & !*us;
         score += safe.popcnt() as i32 * MOBILITY_BONUS[4];
     }
@@ -282,7 +296,7 @@ fn eval_king_safety(board: &Board, color: Color) -> i32 {
 pub fn evaluate_with_state(board: &Board, state: &EvalState, _alpha: i32, _beta: i32) -> i32 {
     let us = board.side_to_move();
     let them = !us;
-    
+
     let phase = game_phase(board);
     let mg_weight = phase.min(24);
     let eg_weight = 24 - mg_weight;

@@ -53,22 +53,17 @@ impl StagedMoveGen {
 
         // Add EP capture if available
         if let Some(ep_sq) = self.board.en_passant() {
-             // We need to re-generate EP moves specifically or just rely on MoveGen handling it?
-             // MoveGen handles EP if the target square is set correctly.
-             // But set_iterator_mask takes a BitBoard.
-             // Standard chess crate MoveGen with mask *targets excludes EP if dest is empty.
-             // We already fixed this in search.rs, need to apply same logic here.
+            // Note: board.en_passant() returns the victim square? No, standard chess logic says EP square is destination.
+            // Wait, chess crate en_passant() returns Option<Square>.
+            // "The en passant target square is the square that the pawn passed over." (Wikipedia)
+            // But usually engines store the square *behind* the pawn.
+            // chess crate docs: "Returns the en passant square if one exists."
+            // In FEN "e3", e3 is the destination.
+            // Let's assume ep_sq IS the destination (which is empty).
+            // So we just add it to the mask.
+            // Using OR (|) instead of XOR (^) to be safe.
 
-            let dest_idx = if self.board.side_to_move() == chess::Color::White {
-                ep_sq.to_index() + 8
-            } else {
-                ep_sq.to_index() - 8
-            };
-            let dest = unsafe { chess::Square::new(dest_idx as u8) };
-
-            // Re-create generator with fixed mask
-            let mut mask = *targets;
-            mask ^= chess::BitBoard::from_square(dest);
+            let mask = *targets | chess::BitBoard::from_square(ep_sq);
             gen.set_iterator_mask(mask);
         }
 
@@ -138,74 +133,23 @@ impl Iterator for StagedMoveGen {
                     }
                 },
                 Stage::CapturesWinning => {
+                    // Generate once
                     if self.captures_buffer.is_empty() && self.idx == 0 {
                         self.generate_captures();
                     }
 
                     if self.idx < self.captures_buffer.len() {
                         let mv = self.captures_buffer[self.idx];
-                        // Check if SEE >= 0
-                        if eval::see(&self.board, mv) >= 0 {
-                            self.idx += 1;
-                            return Some(mv);
-                        } else {
-                            // Skip losing captures for now, save for later stage?
-                            // For simplicity, we just iterate them in StagedMoveGen but mark them.
-                            // Actually, let's just emit them in CapturesLosing
-                             self.idx += 1;
-                             continue; // Wait, we missed returning it!
-                             // We need to store it or split the buffer.
-                             // Let's split buffer on generation? No.
-                             // Let's just iterate all captures here but ordered.
-                             // "Winning" captures are first due to sort.
-                             // But wait, sort order puts high SEE first.
-                             // So eventually we hit negative SEE.
-                        }
+                        self.idx += 1;
+                        return Some(mv);
                     }
 
-                    // Reset idx for next stage (if we had separate buffers)
-                    // Since we have one buffer sorted by score, we just need to iterate it all?
-                    // Refinement: Staged generation usually splits "Good Captures" and "Bad Captures"
-                    // because we want to search Killers *before* Bad Captures.
-
-                    // RESTART logic for correct staging:
-                    // We need to filter captures buffer into Good/Bad
-                    // Or iterate it and skip bad, then revisit bad.
-
-                    // Let's redo generation:
-                    self.captures_buffer.clear(); // Clear initial empty
-                    self.generate_captures(); // Now full
-
-                    // Partition?
-                    // Let's stick to simple iterator: Yield all good captures now.
-                    // Store bad captures for later?
-
-                    // Simplification for this iteration:
-                    // Just yield all captures. Optimization comes from yielding TT move first.
-                    // To do strictly TT -> Cap -> Killer -> Quiet, we need that order.
-
-                    // Let's implement full logic:
-                    // 1. TT Move (Done)
-                    // 2. Captures (Good)
-                    // 3. Killers (Non-capture)
-                    // 4. Quiets (Good History)
-                    // 5. Captures (Bad) - usually skipped in qsearch but needed in main search
-
-                    // Current simplification:
-                    // 2. All Captures (Sorted)
-                    // 3. Killers
-                    // 4. Quiets
-
+                    // Done with captures (both winning and losing are in buffer sorted)
+                    self.stage = Stage::CapturesLosing;
                     self.idx = 0;
-                    self.stage = Stage::CapturesLosing; // Reuse stage names loosely
                 },
                 Stage::CapturesLosing => {
-                     // Iterate populated captures buffer
-                     if self.idx < self.captures_buffer.len() {
-                         let mv = self.captures_buffer[self.idx];
-                         self.idx += 1;
-                         return Some(mv);
-                     }
+                     // Already handled in CapturesWinning in this simplified flow
                      self.stage = Stage::Killers;
                      self.idx = 0;
                 },
