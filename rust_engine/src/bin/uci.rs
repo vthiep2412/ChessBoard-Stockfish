@@ -108,6 +108,7 @@ fn main() {
                 }
 
                 // Reset stop flag for new search
+                search::clear_stop_flag();
                 search::reset_node_counts();
 
                 // Parse time controls

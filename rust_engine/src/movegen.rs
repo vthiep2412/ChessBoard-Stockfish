@@ -14,8 +14,8 @@ pub enum Stage {
     Done,
 }
 
-pub struct StagedMoveGen {
-    board: Board,
+pub struct StagedMoveGen<'a> {
+    board: &'a Board,
     tt_move: Option<ChessMove>,
     killers: [Option<ChessMove>; 2],
     stage: Stage,
@@ -24,8 +24,8 @@ pub struct StagedMoveGen {
     idx: usize,
 }
 
-impl StagedMoveGen {
-    pub fn new(board: &Board, tt_move: Option<ChessMove>, ply: u8) -> Self {
+impl<'a> StagedMoveGen<'a> {
+    pub fn new(board: &'a Board, tt_move: Option<ChessMove>, ply: u8) -> Self {
         // Fetch killers for this ply
         // Explicitly type closure argument to satisfy compiler
         let killers = KILLERS.with(|k: &std::cell::RefCell<[[Option<ChessMove>; 2]; 64]>|
@@ -33,7 +33,7 @@ impl StagedMoveGen {
         );
 
         Self {
-            board: *board,
+            board,
             tt_move,
             killers,
             stage: Stage::TTMove,
@@ -46,7 +46,7 @@ impl StagedMoveGen {
     // Generate captures and populate buffer
     fn generate_captures(&mut self) {
         let targets = self.board.color_combined(!self.board.side_to_move());
-        let mut gen = MoveGen::new_legal(&self.board);
+        let mut gen = MoveGen::new_legal(self.board);
         gen.set_iterator_mask(*targets);
 
         // Add EP capture if available
@@ -74,7 +74,7 @@ impl StagedMoveGen {
         // Sort by MVV-LVA + SEE
         // Optimization: Sort only when needed (CapturesWinning vs Losing)
         // For now, simple sort
-        let board = &self.board;
+        let board = self.board;
         self.captures_buffer.sort_by_key(|m| {
             let see = eval::see(board, *m);
             // Higher is better
@@ -85,7 +85,7 @@ impl StagedMoveGen {
     // Generate quiets
     fn generate_quiets(&mut self) {
         let targets = !self.board.color_combined(!self.board.side_to_move()); // Non-captures
-        let mut gen = MoveGen::new_legal(&self.board);
+        let mut gen = MoveGen::new_legal(self.board);
         gen.set_iterator_mask(targets); // Only quiets
 
         for m in gen {
@@ -125,7 +125,7 @@ impl StagedMoveGen {
     }
 }
 
-impl Iterator for StagedMoveGen {
+impl<'a> Iterator for StagedMoveGen<'a> {
     type Item = ChessMove;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -135,8 +135,7 @@ impl Iterator for StagedMoveGen {
                     self.stage = Stage::CapturesWinning;
                     if let Some(mv) = self.tt_move {
                         // Verify legality (TT move might be from collision)
-                        // This is slow, maybe verify cheaply?
-                        if chess::MoveGen::new_legal(&self.board).any(|m| m == mv) {
+                        if self.board.legal(mv) {
                              return Some(mv);
                         }
                     }
@@ -172,7 +171,7 @@ impl Iterator for StagedMoveGen {
                                 // Check for quiet move: destination must be empty
                                 && self.board.piece_on(km.get_dest()).is_none()
                                 // Verify legality
-                                && chess::MoveGen::new_legal(&self.board).any(|m| m == km)
+                                && self.board.legal(km)
                              {
                                  return Some(km);
                              }

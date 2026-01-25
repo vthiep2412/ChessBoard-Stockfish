@@ -353,7 +353,7 @@ pub fn evaluate(board: &Board) -> i32 {
     score
 }
 
-pub fn evaluate_lazy(board: &Board, _alpha: i32, _beta: i32) -> i32 {
+pub fn evaluate_lazy(board: &Board, alpha: i32, beta: i32) -> i32 {
     let state = EvalState::new(board);
     let us = board.side_to_move();
     let them = !us;
@@ -365,12 +365,25 @@ pub fn evaluate_lazy(board: &Board, _alpha: i32, _beta: i32) -> i32 {
     let mg_weight = phase.min(24);
     let eg_weight = 24 - mg_weight;
 
-    (score_mg * mg_weight + score_eg * eg_weight) / 24
+    let score = (score_mg * mg_weight + score_eg * eg_weight) / 24;
+
+    // Margin-based early exit (fail-soft)
+    // If the material score is way off, return bound
+    let margin = 200;
+    if score < alpha - margin {
+        return alpha;
+    }
+    if score > beta + margin {
+        return beta;
+    }
+
+    score
 }
 
 // Helpers for Search
 pub fn is_capture(board: &Board, mv: chess::ChessMove) -> bool {
     // Check standard capture, promotion, or En Passant
+    // Note: We treat promotions as captures for search pruning purposes (high value events)
     board.piece_on(mv.get_dest()).is_some()
     || mv.get_promotion().is_some()
     || (board.en_passant() == Some(mv.get_dest()) && board.piece_on(mv.get_source()) == Some(chess::Piece::Pawn))

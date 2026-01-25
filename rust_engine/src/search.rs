@@ -243,6 +243,11 @@ pub fn stop() {
     STOP_SEARCH.store(true, Ordering::Relaxed);
 }
 
+/// Helper to clear stop flag (explicitly requested by review)
+pub fn clear_stop_flag() {
+    STOP_SEARCH.store(false, Ordering::Relaxed);
+}
+
 /// Time Management
 #[derive(Clone, Copy)]
 pub struct TimeManager {
