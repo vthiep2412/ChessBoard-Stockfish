@@ -555,21 +555,37 @@ fn negamax(
             if let Some(tm) = tt_move {
                 if entry.depth >= depth.saturating_sub(3) {
                     let se_beta = (entry.score as i32).saturating_sub(2 * depth as i32);
-                    // Check other moves (shallow)
-                    // We use MoveGen here instead of StagedMoveGen to avoid overhead of creating full iterator
-                    // for just this check, or we could just skip this check if it's too expensive.
-                    // For now, let's keep it simple and skip generating all moves if possible.
-                    // Actually, let's implement strict SE: only if TT move is significantly better.
+                    let se_depth = (depth - 1) / 2;
 
-                    // Optimization: Only check if TT move is legal (it is if we decoded it)
-                    // ... (Code omitted for brevity, keeping it simple for now)
-                    // Let's implement simpler Singular Extension:
-                    // If TT score is much higher than static eval, maybe extend?
-                    // Standard SE requires searching other moves.
+                    // Search all other moves at reduced depth
+                    // If they all fail low (score < se_beta), then the TT move is "singular" (the only good one)
+                    // and we should extend the search depth for it.
+                    let mut is_singular = true;
 
-                    // We will trust the original implementation's intent but use the StagedGen for the main loop.
-                    // To do SE properly requires excluding the TT move and searching everything else.
-                    // Let's defer advanced SE to next iteration and focus on StagedGen.
+                    let mut gen = MoveGen::new_legal(board);
+                    for other_mv in gen {
+                        if other_mv == tm { continue; }
+
+                        let new_board = board.make_move_new(other_mv);
+                        let mut new_eval = eval_state;
+                        new_eval.apply_move(board, other_mv);
+
+                        // Null window search for singular extension check
+                        let (score, _) = negamax(&new_board, new_eval, Some(other_mv), se_depth, -se_beta, -se_beta + 1, ply + 1, false, time_manager);
+                        let score = -score;
+
+                        if STOP_SEARCH.load(Ordering::Relaxed) { return (0, None); }
+
+                        if score >= se_beta {
+                            // Found a move that's also good - not singular
+                            is_singular = false;
+                            break;
+                        }
+                    }
+
+                    if is_singular {
+                        extension = 1;
+                    }
                 }
             }
         }
@@ -617,7 +633,9 @@ fn negamax(
             reduction = reduction.min(depth - 1).max(0);
         }
         
-        let new_depth = (depth as i16 - 1 - reduction as i16).max(0) as u8;
+        // Apply extension to new depth
+        let extend = if i == 0 { extension } else { 0 };
+        let new_depth = (depth as i16 - 1 - reduction as i16 + extend as i16).max(0) as u8;
         let mut score;
         
         if i == 0 {
