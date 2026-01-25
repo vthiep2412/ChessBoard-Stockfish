@@ -93,6 +93,9 @@ fn main() {
                                  break;
                              }
                         }
+                        if !found {
+                            eprintln!("info string Invalid move: {}", target);
+                        }
                     }
                 }
             },

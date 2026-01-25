@@ -154,12 +154,16 @@ fn eval_pawns(board: &Board, color: Color) -> i32 {
         let mut neighbors = BitBoard::new(0);
         let rank_idx = rank.to_index();
         let file_idx = file.to_index();
+
+        // Safe square construction using make_square (Rank, File)
         if file_idx > 0 {
-            let s = unsafe { Square::new((rank_idx * 8 + (file_idx - 1)) as u8) };
+            let file_left = File::from_index(file_idx - 1);
+            let s = Square::make_square(rank, file_left);
             neighbors |= file_bb(s);
         }
         if file_idx < 7 {
-            let s = unsafe { Square::new((rank_idx * 8 + (file_idx + 1)) as u8) };
+            let file_right = File::from_index(file_idx + 1);
+            let s = Square::make_square(rank, file_right);
             neighbors |= file_bb(s);
         }
 
@@ -167,34 +171,18 @@ fn eval_pawns(board: &Board, color: Color) -> i32 {
             score += PAWN_ISOLATED;
         }
 
-        // Backward (simplified)
-        // No friendly pawns behind or on same rank on adjacent files
-        // This is complex, skipping for now to focus on Passed
-
         // Passed
-        // No enemy pawns in front on same file or adjacent files
         let front = front_span(color, sq);
-        let mut span = front;
-        // Expand span to adjacent files
-        // Shift left/right
-        // BitBoard doesn't impl simple shift, use raw u64
-        let bb_span = front.0;
-        let adj_mask = 0xFEFEFEFEFEFEFEFEu64; // Not A file
-        let adj_mask_h = 0x7F7F7F7F7F7F7F7Fu64; // Not H file
-        let left_span = (bb_span & adj_mask) << 1; // Wait, shifting logic depends on endian/mapping?
-        // chess crate: 0=A1, 7=H1.
-        // Left (A->B) is +1? No, A1=0, B1=1.
-        // So file A is 0.
-        // To check adjacent files, we mask and shift.
-        // We can just use file_bb logic.
 
         let mut passed_mask = front;
         if file_idx > 0 {
-            let s = unsafe { Square::new((rank_idx * 8 + (file_idx - 1)) as u8) };
+            let file_left = File::from_index(file_idx - 1);
+            let s = Square::make_square(rank, file_left);
             passed_mask |= front_span(color, s);
         }
         if file_idx < 7 {
-            let s = unsafe { Square::new((rank_idx * 8 + (file_idx + 1)) as u8) };
+            let file_right = File::from_index(file_idx + 1);
+            let s = Square::make_square(rank, file_right);
             passed_mask |= front_span(color, s);
         }
 
