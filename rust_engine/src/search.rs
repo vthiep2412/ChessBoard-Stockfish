@@ -384,19 +384,10 @@ fn quiescence(board: &Board, mut alpha: i32, beta: i32, ply: u8) -> i32 {
         return alpha;
     }
     
-    // Use StagedMoveGen for captures, but manually here for now to avoid overhead?
-    // StagedMoveGen is designed for negamax (captures + quiets).
-    // For QSearch, we only want captures.
-
     let mut targets = *board.color_combined(!board.side_to_move());
     if let Some(ep_sq) = board.en_passant() {
-        let dest_idx = if board.side_to_move() == chess::Color::White {
-            ep_sq.to_index() + 8
-        } else {
-            ep_sq.to_index() - 8
-        };
-        let dest = unsafe { chess::Square::new(dest_idx as u8) };
-        targets ^= chess::BitBoard::from_square(dest);
+        // En-passant square IS the destination square in chess crate
+        targets |= chess::BitBoard::from_square(ep_sq);
     }
 
     let mut gen = MoveGen::new_legal(board);
@@ -562,27 +553,35 @@ fn negamax(
                     let se_beta = (entry.score as i32).saturating_sub(2 * depth as i32);
                     let se_depth = (depth - 1) / 2;
 
-                    // Search all other moves at reduced depth
-                    // If they all fail low (score < se_beta), then the TT move is "singular" (the only good one)
-                    // and we should extend the search depth for it.
+                    // Search other moves at reduced depth to verify singularity
+                    // Optimization: Only check first few moves and use StagedMoveGen
                     let mut is_singular = true;
+                    let mut moves_checked = 0;
+                    let max_checks = 6; // Limit checks to avoid overhead
 
-                    let mut gen = MoveGen::new_legal(board);
-                    for other_mv in gen {
+                    // We don't have a staged gen for *other* moves easily without excluding TT move inside
+                    // But we can use StagedMoveGen and skip the TT move.
+                    let mut se_gen = StagedMoveGen::new(board, None, ply);
+
+                    while let Some(other_mv) = se_gen.next() {
                         if other_mv == tm { continue; }
+
+                        moves_checked += 1;
+                        if moves_checked > max_checks {
+                            is_singular = false; // Assume not singular if we have many alternatives
+                            break;
+                        }
 
                         let new_board = board.make_move_new(other_mv);
                         let mut new_eval = eval_state;
                         new_eval.apply_move(board, other_mv);
 
-                        // Null window search for singular extension check
                         let (score, _) = negamax(&new_board, new_eval, Some(other_mv), se_depth, -se_beta, -se_beta + 1, ply + 1, false, time_manager);
                         let score = -score;
 
                         if STOP_SEARCH.load(Ordering::Relaxed) { return (0, None); }
 
                         if score >= se_beta {
-                            // Found a move that's also good - not singular
                             is_singular = false;
                             break;
                         }
@@ -770,7 +769,7 @@ pub fn iterative_deepening(
         }
         
         let (nodes, qnodes) = get_node_counts();
-        eprintln!("info depth {} score cp {} nodes {} qnodes {} total {}",
+        println!("info depth {} score cp {} nodes {} qnodes {} total {}",
             depth, best_score, nodes, qnodes, nodes + qnodes);
     }
     
@@ -849,7 +848,7 @@ pub fn parallel_root_search(
         let hash = board.get_hash();
         tt_store(hash, depth, best_score, TTFlag::Exact, best_move);
         
-        eprintln!("info depth {} score cp {} pv {}", depth, best_score, current_best_move);
+        println!("info depth {} score cp {} pv {}", depth, best_score, current_best_move);
     }
     
     (best_move, best_score)
