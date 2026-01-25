@@ -1,12 +1,12 @@
-use pyo3::prelude::*;
-use std::sync::OnceLock;
-
-mod search;
-mod eval;
+pub mod search;
+pub mod eval;
 mod book;
+pub mod movegen;
 
 use chess::{Board, MoveGen};
 use std::str::FromStr;
+use std::sync::OnceLock;
+use pyo3::prelude::*;
 
 // Global book instance (loaded once)
 static BOOK: OnceLock<Option<book::OpeningBook>> = OnceLock::new();
@@ -131,5 +131,13 @@ fn rust_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_node_counts, m)?)?;
     m.add_function(wrap_pyfunction!(clear_tt, m)?)?;
     m.add_function(wrap_pyfunction!(set_debug, m)?)?;
+    m.add_function(wrap_pyfunction!(stop_search, m)?)?;
+    Ok(())
+}
+
+/// Stop search helper for Python (optional, but good for completeness)
+#[pyfunction]
+fn stop_search() -> PyResult<()> {
+    search::stop();
     Ok(())
 }

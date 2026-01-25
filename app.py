@@ -1073,17 +1073,14 @@ class ChessApp:
             if multipv == 1:
                 try:
                     m = chess.Move.from_uci(pv_moves[0])
-                    arrows.append((m.from_square, m.to_square, "#00FF00")) # Green (Tkinter no alpha)
-                except: pass
+                    arrows.append((m.from_square, m.to_square, "#00FF00")) # Green
+                except ValueError:
+                    pass
                 
         self.analysis_text.config(state="disabled")
         
-        # Only update arrows if changed
-        # Update arrows if changed OR if setting enabled
-        if self.show_best_move_arrow.get():
-            self.analysis_arrows = arrows
-        else:
-            self.analysis_arrows = []
+        # Update arrows state
+        self.analysis_arrows = arrows
             
         self._update_board()
     
@@ -1401,6 +1398,7 @@ class ChessApp:
         self.canvas.delete("all")
         last_move = self.board.peek() if self.board.move_stack else None
         
+        # 1. Draw Squares
         for rank in range(8):
             for file in range(8):
                 sq = chess.square(file, 7 - rank)
@@ -1421,17 +1419,17 @@ class ChessApp:
                     cx, cy = x + self.SQUARE_SIZE // 2, y + self.SQUARE_SIZE // 2
                     self.canvas.create_oval(cx-r, cy-r, cx+r, cy+r, fill="#888888", outline="")
 
-                # Draw analysis arrow
-                if self.show_best_move_arrow.get() and self.analysis_arrows:
-                    for from_sq, to_sq, color in self.analysis_arrows:
-                        if sq == from_sq:
-                            # Draw arrow start
-                            pass 
-                        # Actual drawing needs to be on top of squares but below pieces? 
-                        # Or pieces on top. Let's draw arrows AFTER squares but BEFORE pieces.
-                        # Wait, we need to iterate arrows separately or draw here.
-                        # Easier to draw arrows after all squares.
-                
+        # 2. Draw Arrows (under pieces)
+        if self.show_best_move_arrow.get():
+            for from_sq, to_sq, color in self.analysis_arrows:
+                self._draw_arrow(from_sq, to_sq, color)
+
+        # 3. Draw Pieces
+        for rank in range(8):
+            for file in range(8):
+                sq = chess.square(file, 7 - rank)
+                x = file * self.SQUARE_SIZE
+                y = rank * self.SQUARE_SIZE
                 piece = self.board.piece_at(sq)
                 if piece:
                     img = self.pieces_images.get(piece.symbol())
@@ -1440,11 +1438,6 @@ class ChessApp:
                         txt = piece.unicode_symbol()
                         self.canvas.create_text(x + self.SQUARE_SIZE//2, y + self.SQUARE_SIZE//2, 
                                               text=txt, font=("Arial", 30))
-
-        # Draw arrows on top of everything
-        if self.show_best_move_arrow.get():
-            for from_sq, to_sq, color in self.analysis_arrows:
-                self._draw_arrow(from_sq, to_sq, color)
 
         self.history_text.config(state="normal")
         self.history_text.delete(1.0, tk.END)
