@@ -235,7 +235,12 @@ const CONTEMPT: i32 = -15; // Slight draw aversion (engine sees draws as bad)
 
 static NODE_COUNT: AtomicU64 = AtomicU64::new(0);
 static QNODE_COUNT: AtomicU64 = AtomicU64::new(0);
-static STOP_SEARCH: AtomicBool = AtomicBool::new(false);
+pub static STOP_SEARCH: AtomicBool = AtomicBool::new(false);
+
+/// Helper to stop search
+pub fn stop() {
+    STOP_SEARCH.store(true, Ordering::Relaxed);
+}
 
 /// Time Management
 #[derive(Clone, Copy)]

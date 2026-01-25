@@ -1051,7 +1051,7 @@ class ChessApp:
                 try:
                     m = chess.Move.from_uci(pv_moves[0])
                     arrows.append((m.from_square, m.to_square, "#00FF00")) # Green
-                except: pass
+                except ValueError: pass
                 
         self.analysis_text.config(state="disabled")
         

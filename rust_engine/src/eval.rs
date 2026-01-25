@@ -129,7 +129,7 @@ fn attacks_by_piece(piece: Piece, sq: Square, occ: BitBoard) -> BitBoard {
         Piece::Knight => chess::get_knight_moves(sq),
         Piece::Bishop => chess::get_bishop_moves(sq, occ),
         Piece::Rook => chess::get_rook_moves(sq, occ),
-        Piece::Queen => chess::get_bishop_moves(sq, occ) ^ chess::get_rook_moves(sq, occ),
+        Piece::Queen => chess::get_bishop_moves(sq, occ) | chess::get_rook_moves(sq, occ),
         Piece::King => chess::get_king_moves(sq),
         _ => BitBoard::new(0),
     }

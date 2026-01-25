@@ -19,16 +19,41 @@ fn main() {
         match commands[0] {
             "uci" => {
                 println!("id name RustEngine");
-                println!("id author Jules");
+                println!("id author Hiep & Jules");
                 println!("option name Hash type spin default 64 min 1 max 1024");
                 println!("option name Threads type spin default 1 min 1 max 64");
                 println!("uciok");
+            },
+            "setoption" => {
+                // setoption name Hash value 128
+                // Basic parsing
+                if commands.len() >= 5 && commands[1] == "name" && commands[3] == "value" {
+                    let name = commands[2];
+                    let value = commands[4];
+                    match name.to_lowercase().as_str() {
+                        "hash" => {
+                            // Logic to resize TT would go here
+                            // For now we acknowledge it
+                            if let Ok(_v) = value.parse::<usize>() {
+                                // TODO: Resize TT
+                            }
+                        },
+                        "threads" => {
+                            // Logic to set thread pool size
+                            if let Ok(_v) = value.parse::<usize>() {
+                                // TODO: Set threads
+                            }
+                        },
+                        _ => {}
+                    }
+                }
             },
             "isready" => println!("readyok"),
             "ucinewgame" => {
                 search::tt_clear();
             },
             "position" => {
+                if commands.len() < 2 { continue; }
                 // position startpos moves e2e4 ...
                 // position fen ... moves ...
                 let mut moves_idx = 1;
@@ -72,6 +97,9 @@ fn main() {
                 }
             },
             "go" => {
+                // Reset stop flag
+                search::reset_node_counts();
+
                 // Parse time controls
                 let mut wtime = None;
                 let mut btime = None;
@@ -109,6 +137,18 @@ fn main() {
                         println!("bestmove 0000");
                     }
                 });
+            },
+            "stop" => {
+                // Signal search to stop
+                // We use the exposed search::set_debug method to access internals or just rely on atomic
+                // But wait, STOP_SEARCH is private in search.rs.
+                // We need a public method to set it.
+                // Let's assume we add `search::stop()` in search.rs or use existing mechanism.
+                // The plan said "uci.rs can set the rust_engine::search::STOP_SEARCH directly if exposed".
+                // If not exposed, I need to expose it.
+                // For now, I will use a placeholder and fix search.rs in next step if needed.
+                // Actually, I can write to search.rs to make it public or add a helper.
+                search::stop();
             },
             "quit" => break,
             _ => {}
