@@ -92,8 +92,17 @@ impl StagedMoveGen {
 
         for m in gen {
             if Some(m) == self.tt_move { continue; }
-            // Skip EP captures (they are in the quiet mask because dest is empty, but are captures)
-            if Some(m.get_dest()) == self.board.en_passant() { continue; }
+
+            // Skip ONLY EP captures (pawn moving diagonally to EP square)
+            // Regular quiet moves to EP square (if any?) or other moves shouldn't be skipped here if they are quiets
+            // But EP square is empty, so moves to it are quiets unless it's a pawn capture
+            if Some(m.get_dest()) == self.board.en_passant()
+                && self.board.piece_on(m.get_source()) == Some(chess::Piece::Pawn)
+                && m.get_source().get_file() != m.get_dest().get_file()
+            {
+                continue;
+            }
+
             self.quiets_buffer.push(m);
         }
 

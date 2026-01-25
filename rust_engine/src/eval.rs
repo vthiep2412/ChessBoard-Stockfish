@@ -115,6 +115,15 @@ fn file_bb(sq: Square) -> BitBoard {
 fn front_span(color: Color, sq: Square) -> BitBoard {
     let bb = file_bb(sq);
     let rank = sq.get_rank().to_index();
+
+    // Guard against edge shifts to avoid overflow
+    if color == Color::White && rank == 7 {
+        return BitBoard::new(0);
+    }
+    if color == Color::Black && rank == 0 {
+        return BitBoard::new(0);
+    }
+
     let mask = if color == Color::White {
         !((1u64 << (8 * (rank + 1))) - 1)
     } else {
