@@ -1,7 +1,7 @@
 {
     "default_depth": 16,
     "override_gui_depth": true,
-    "aggressiveness": 10,
+    "aggressiveness": 7,
     "use_parallel": false,
     "comment": "depth 15 for good play, aggressiveness 7 (aggressive), parallel OFF until fixed"
 }

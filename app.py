@@ -802,19 +802,42 @@ class ChessApp:
         ttk.Checkbutton(eval_frame, text="Show Evaluation Bar", variable=temp_show_eval,
                         bootstyle="success-round-toggle").pack(anchor="w")
         
-        # Show analysis toggle
+        # Show Analysis Toggle
         analysis_frame = ttk.Frame(dialog)
         analysis_frame.pack(fill="x", padx=20, pady=5)
-        ttk.Checkbutton(analysis_frame, text="Show Stockfish Analysis", variable=temp_show_analysis,
-                        bootstyle="info-round-toggle").pack(anchor="w")
         
-        # Show Best Move Arrow Toggle (only if analysis is on)
-        if temp_show_analysis.get():
-            arrow_frame = ttk.Frame(dialog)
-            arrow_frame.pack(fill="x", padx=40, pady=2)
-            temp_arrow_game = tk.BooleanVar(value=self.show_best_move_arrow.get())
-            ttk.Checkbutton(arrow_frame, text="Show Green Arrow", variable=temp_arrow_game,
-                            bootstyle="success-round-toggle").pack(anchor="w")
+        # Define arrow checkbox first so we can reference it
+        # But we need to pack it after logic or adjust order
+        # We will define variable, define frame/widget, then define callback
+        
+        # Best Move Arrow Var (Always define)
+        temp_arrow_game = tk.BooleanVar(value=self.show_best_move_arrow.get())
+
+        # Show Best Move Arrow Toggle (Always visible, disabled if analysis off)
+        arrow_frame = ttk.Frame(dialog)
+        # Note: We create it effectively here, but pack order depends on creation order or explicit pack
+        # To maintain visual order: Eval -> Analysis -> Arrow
+        
+        # Create Analysis Checkbutton
+        analysis_chk = ttk.Checkbutton(analysis_frame, text="Show Stockfish Analysis", variable=temp_show_analysis,
+                        bootstyle="info-round-toggle")
+        analysis_chk.pack(anchor="w")
+        
+        # Pack Arrow Frame (below analysis)
+        arrow_frame.pack(fill="x", padx=40, pady=2)
+        arrow_chk = ttk.Checkbutton(arrow_frame, text="Show Green Arrow", variable=temp_arrow_game,
+                        bootstyle="success-round-toggle")
+        arrow_chk.pack(anchor="w")
+
+        def update_arrow_state():
+            if temp_show_analysis.get():
+                arrow_chk.configure(state="normal")
+            else:
+                arrow_chk.configure(state="disabled")
+
+        # Configure command and set initial state
+        analysis_chk.configure(command=update_arrow_state)
+        update_arrow_state()
         
         # Analysis lines slider
         lines_frame = ttk.Frame(dialog)
@@ -1050,7 +1073,7 @@ class ChessApp:
             if multipv == 1:
                 try:
                     m = chess.Move.from_uci(pv_moves[0])
-                    arrows.append((m.from_square, m.to_square, "#00FF0080")) # Transparent Green
+                    arrows.append((m.from_square, m.to_square, "#00FF00")) # Green (Tkinter no alpha)
                 except: pass
                 
         self.analysis_text.config(state="disabled")

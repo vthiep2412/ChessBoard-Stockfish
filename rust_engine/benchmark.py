@@ -8,6 +8,7 @@ import sys
 import os
 import subprocess
 import re
+import datetime
 
 # Add the target directory to path for the compiled module
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'target', 'release'))
@@ -146,54 +147,79 @@ def benchmark_position(name: str, fen: str, depth: int = DEPTH_BENCH) -> dict:
         "nps": nps,
     }
 
-def get_stockfish_top_moves(fen: str, depth: int = DEPTH_BENCH, num_moves: int = 5) -> list:
-    """Get Stockfish's top N moves for a position using MultiPV"""
-    try:
-        proc = subprocess.Popen(
-            [STOCKFISH_PATH],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1  # Line buffered
-        )
-        
-        # Send UCI commands one at a time
-        def send(cmd):
-            proc.stdin.write(cmd + "\n")
-            proc.stdin.flush()
-        
-        send("uci")
-        send(f"setoption name MultiPV value {num_moves}")
-        send("isready")
-        send(f"position fen {fen}")
-        send(f"go depth {depth}")
-        
-        # Read output until we get bestmove
-        moves_by_mpv = {}
-        output_lines = []
-        
-        import threading
-        
-        def read_output():
+class StockfishHelper:
+    def __init__(self):
+        self.process = None
+        self.lock = False
+
+    def start(self):
+        if self.process:
+            return
+        try:
+            self.process = subprocess.Popen(
+                [STOCKFISH_PATH],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1
+            )
+            self._send("uci")
+            
+            # Read header until uciok
             while True:
-                line = proc.stdout.readline()
-                if not line:
+                line = self.process.stdout.readline()
+                if not line or line.strip() == "uciok":
                     break
-                output_lines.append(line.strip())
-                if line.startswith("bestmove"):
-                    break
+                    
+        except Exception as e:
+            print(f"Failed to start Stockfish: {e}")
+            self.process = None
+
+    def stop(self):
+        if self.process:
+            try:
+                self.process.terminate()
+            except:
+                pass
+            self.process = None
+
+    def _send(self, cmd):
+        if self.process:
+            try:
+                self.process.stdin.write(cmd + "\n")
+                self.process.stdin.flush()
+            except IOError:
+                self.stop()
+
+    def get_top_moves(self, fen: str, depth: int = 12, num_moves: int = 5) -> list:
+        if not self.process:
+            self.start()
         
-        reader = threading.Thread(target=read_output)
-        reader.start()
-        reader.join(timeout=30)  # 30 second timeout
-        
-        if reader.is_alive():
-            proc.kill()
+        if not self.process:
             return []
+
+        self._send("isready")
+        while True:
+            line = self.process.stdout.readline()
+            if not line or line.strip() == "readyok":
+                break
+
+        self._send(f"setoption name MultiPV value {num_moves}")
+        self._send(f"position fen {fen}")
+        self._send(f"go depth {depth}")
+
+        moves_by_mpv = {}
         
-        # Parse collected output
-        for line in output_lines:
+        while True:
+            line = self.process.stdout.readline()
+            if not line:
+                break
+            line = line.strip()
+            
+            if line.startswith("bestmove"):
+                break
+                
             if 'info' in line and ' depth ' in line and ' pv ' in line:
                 # Extract depth
                 depth_match = re.search(r' depth (\d+)', line)
@@ -213,18 +239,12 @@ def get_stockfish_top_moves(fen: str, depth: int = DEPTH_BENCH, num_moves: int =
                     if mpv_num not in moves_by_mpv or line_depth > moves_by_mpv[mpv_num][0]:
                         moves_by_mpv[mpv_num] = (line_depth, move)
         
-        proc.kill()
-        
-        # Build ordered list from multipv 1, 2, 3...
+        # Build ordered list
         moves = []
         for i in range(1, num_moves + 1):
             if i in moves_by_mpv:
                 moves.append(moves_by_mpv[i][1])
-        
         return moves[:num_moves]
-    except Exception as e:
-        print(f"Stockfish error: {e}")
-        return []
 
 
 def run_nps_test(depth: int = 12) -> None:
@@ -242,47 +262,57 @@ def run_nps_test(depth: int = 12) -> None:
     quality_score = 0  # Weighted score: Top1=5, Top2=4, Top3=3, Top4=2, Top5=1
     max_quality_score = 0
     
-    for name, fen in TEST_POSITIONS:
-        result = benchmark_position(name, fen, depth)
-        results.append(result)
-        
-        # Skip positions that had errors
-        if "error" in result:
-            print(f"    [SKIP] {name}: {result['error']}")
-            continue
+    sf_helper = StockfishHelper()
+    sf_helper.start()
+    try:
+        for name, fen in TEST_POSITIONS:
+            result = benchmark_position(name, fen, depth)
+            results.append(result)
             
-        total_time += result["time_ms"]
-        
-        # Get Stockfish's top 5 moves for comparison
-        sf_moves = get_stockfish_top_moves(fen, depth=12, num_moves=5)
-        our_move = result['best_move']
-        
-        # Check position in Stockfish's ranking
-        max_quality_score += 5  # Max possible score
-        if our_move in sf_moves:
-            position = sf_moves.index(our_move) + 1  # 1-indexed
-            points = 6 - position  # Top1=5, Top2=4, Top3=3, Top4=2, Top5=1
-            quality_score += points
-            quality_hits += 1
-            quality_mark = f"★{position}"  # Show ranking
-        else:
-            position = 0
-            points = 0
-            quality_mark = "✗"
-        
-        quality_total += 1
-        
-        # Format NPS for display
-        nps_str = f"{result['nps']/1000:.0f}k" if result['nps'] < 1000000 else f"{result['nps']/1000000:.1f}M"
-        nodes_str = f"{(result['nodes']+result['qnodes'])/1000:.0f}k"
-        
-        time_color = Colors.GREEN if result['time_ms'] < 1000 else (Colors.YELLOW if result['time_ms'] < 3000 else Colors.RED)
-        move_color = Colors.GREEN if quality_hits > quality_total - 1 else Colors.ENDC # Highlight latest if good
-        
-        sf_display = ", ".join(sf_moves[:3]) if sf_moves else "?"
-        quality_display = colorize(quality_mark, Colors.GREEN if "★" in quality_mark else Colors.RED)
-        
-        print(f"  {name:<18} {colorize(f'{result['time_ms']:6.0f}ms', time_color)} {nodes_str:<9} {colorize(f'{nps_str:<9}', Colors.CYAN)} {colorize(f'{our_move:<7}', Colors.BOLD)} {quality_display} (SF: {sf_display})")
+            # Skip positions that had errors
+            if "error" in result:
+                print(f"    [SKIP] {name}: {result['error']}")
+                continue
+                
+            total_time += result["time_ms"]
+            
+            # Get Stockfish's top 5 moves for comparison
+            sf_moves = sf_helper.get_top_moves(fen, depth=12, num_moves=5)
+            our_move = result['best_move']
+            
+            # Check position in Stockfish's ranking
+            max_quality_score += 5  # Max possible score
+            if our_move in sf_moves:
+                position = sf_moves.index(our_move) + 1  # 1-indexed
+                points = 6 - position  # Top1=5, Top2=4, Top3=3, Top4=2, Top5=1
+                quality_score += points
+                quality_hits += 1
+                quality_mark = f"★{position}"  # Show ranking
+            else:
+                position = 0
+                points = 0
+                quality_mark = "✗"
+            
+            quality_total += 1
+            
+            # Format NPS for display
+            nps_str = f"{result['nps']/1000:.0f}k" if result['nps'] < 1000000 else f"{result['nps']/1000000:.1f}M"
+            nodes_str = f"{(result['nodes']+result['qnodes'])/1000:.0f}k"
+            
+            time_color = Colors.GREEN if result['time_ms'] < 1000 else (Colors.YELLOW if result['time_ms'] < 3000 else Colors.RED)
+            move_color = Colors.GREEN if quality_hits > quality_total - 1 else Colors.ENDC # Highlight latest if good
+            
+            sf_display = ", ".join(sf_moves[:3]) if sf_moves else "?"
+            quality_display = colorize(quality_mark, Colors.GREEN if "★" in quality_mark else Colors.RED)
+            
+            print(f"  {name:<18} {colorize(f'{result['time_ms']:6.0f}ms', time_color)} {nodes_str:<9} {colorize(f'{nps_str:<9}', Colors.CYAN)} {colorize(f'{our_move:<7}', Colors.BOLD)} {quality_display} (SF: {sf_display})")
+            
+            # Add slight spacing for readability
+            # print("")
+    finally:
+        sf_helper.stop()
+    
+    print("-" * 75)
         
         # Add slight spacing for readability
         # print("")
@@ -422,10 +452,41 @@ def run_correctness_test() -> None:
 
 
 # ============================================
+# Logger
+# ============================================
+
+class Logger(object):
+    def __init__(self, filename):
+        self.terminal = sys.stdout
+        self.log = open(filename, "w", encoding='utf-8')
+        # Regex to strip ANSI escape codes
+        self.ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+    def write(self, message):
+        self.terminal.write(message)
+        # Strip ANSI codes for file
+        clean_msg = self.ansi_escape.sub('', message)
+        self.log.write(clean_msg)
+        self.log.flush()
+
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
+
+# ============================================
 # Main
 # ============================================
 
 def main():
+    # Setup Logger
+    bench_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench")
+    os.makedirs(bench_dir, exist_ok=True)
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    log_path = os.path.join(bench_dir, f"bench_{timestamp}.log")
+    
+    # Redirect stdout to Logger
+    sys.stdout = Logger(log_path)
+    
     print("\n" + colorize("="*60, Colors.BLUE))
     print(colorize("  RUST CHESS ENGINE BENCHMARK SUITE", Colors.HEADER + Colors.BOLD))
     print(colorize("="*60, Colors.BLUE))
