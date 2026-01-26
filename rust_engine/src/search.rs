@@ -1,6 +1,6 @@
 //! Alpha-Beta Search with Transposition Table, Iterative Deepening, and Parallel Search
 
-use chess::{Board, MoveGen, ChessMove, BoardStatus};
+use chess::{Board, MoveGen, ChessMove, BoardStatus, BitBoard};
 use std::sync::{Arc, Mutex};
 use rayon::prelude::*;
 use crate::eval;
@@ -404,9 +404,7 @@ fn quiescence(board: &Board, mut alpha: i32, beta: i32, ply: u8) -> i32 {
     captures.sort_by_key(|m| -eval::mvv_lva_score(board, *m));
     
     for mv in captures {
-        if eval::see(board, mv) < 0 {
-            continue;
-        }
+        // REMOVED SEE pruning to fix blindness
 
         let captured_value = match board.piece_on(mv.get_dest()) {
             Some(chess::Piece::Pawn) => 100,
@@ -416,7 +414,9 @@ fn quiescence(board: &Board, mut alpha: i32, beta: i32, ply: u8) -> i32 {
             Some(chess::Piece::Queen) => 900,
             _ => 0,
         };
-        if stand_pat + captured_value + 200 < alpha {
+
+        // Increased safety margin from 200 to 900
+        if stand_pat + captured_value + 900 < alpha {
             continue;
         }
         
@@ -511,9 +511,14 @@ fn negamax(
     }
     
     // Null Move Pruning
-    if null_ok && !in_check && !is_endgame && depth >= 3 {
+    // Zugzwang prevention: Only do NMP if we have non-pawn pieces
+    let us = board.side_to_move();
+    let non_pawns = *board.color_combined(us) & !*board.pieces(chess::Piece::Pawn) & !*board.pieces(chess::Piece::King);
+    let zugzwang_risk = non_pawns.0 == 0;
+
+    if null_ok && !in_check && !is_endgame && !zugzwang_risk && depth >= 3 {
         if let Some(null_board) = board.null_move() {
-            let r = 2 + depth / 4;
+            let r = 2; // Fixed reduction for stability
             let (score, _) = negamax(&null_board, eval_state, None, depth.saturating_sub(1 + r), -beta, -beta + 1, ply + 1, false, time_manager);
             let score = -score;
             if STOP_SEARCH.load(Ordering::Relaxed) { return (0, None); }
@@ -644,20 +649,16 @@ fn negamax(
         
         let mut reduction = 0u8;
         if i >= 2 && depth >= 2 && !is_capture && !gives_check && !in_check {
-            let base_reduction = 1.0 + (depth as f32).ln() * ((i) as f32).ln() / 2.0;
-            reduction = base_reduction as u8;
-            
-            let from = mv.get_source().to_index();
-            let to = mv.get_dest().to_index();
-            let hist_score = HISTORY.with(|h| h.borrow()[from][to]);
-            
-            if hist_score > 8000 {
-                reduction = reduction.saturating_sub(1);
-            } else if hist_score < 1000 {
-                reduction = reduction.saturating_add(1);
-            }
-            
-            reduction = reduction.min(depth - 1).max(0);
+             // Check if it is a killer move
+             let ply_idx = (ply as usize).min(63);
+             let is_killer = KILLERS.with(|k| {
+                 let k = k.borrow();
+                 k[ply_idx][0] == Some(mv) || k[ply_idx][1] == Some(mv)
+             });
+
+             if !is_killer {
+                 reduction = 1; // Fixed reduction
+             }
         }
         
         // Apply extension to new depth
