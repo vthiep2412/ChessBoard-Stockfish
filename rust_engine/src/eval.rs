@@ -274,7 +274,6 @@ fn eval_king_safety(board: &Board, color: Color) -> i32 {
 
     // Add squares in front (e.g. if White King at G1, add G2, H2, F2, maybe G3)
     // Simplified: Use the king ring plus forward push
-    let forward = if color == Color::White { 8 } else { -8 };
 
     // Safety: Manual shifting, need to be careful with overflow/underflow logic (though wrapping handles it for bits)
     // Using BitBoard specific shifts is safer if available, but chess crate uses u64

@@ -47,11 +47,11 @@ Stockfish 11's evaluation is highly dense, featuring complex interaction between
 
 ### Architecture Comparison
 
-| Feature | Stockfish 17 (`movepick.h` / `movegen.h`) | My Engine (`movegen.rs`) | Impact |
-| :--- | :--- | :--- | :--- |
-| **Memory Storage** | **Fixed-size Array (Stack)**<br>`ExtMove moves[MAX_MOVES]` | **Heap Vector**<br>`Vec<ChessMove>` | **Critical.** `Vec::with_capacity` and `push` cause allocation/reallocation overhead at *every* node (millions/sec). |
-| **Sorting Strategy** | **Partial / Lazy**<br>`partial_insertion_sort` (sorts only top N moves) or `select<Best>` (lazy swap). | **Full Sort**<br>`vec.sort_by_key(...)` sorts the *entire* list every time. | **High.** Sorting bad moves (that will be pruned anyway) is wasted CPU cycles. |
-| **Generation** | **Pointer Filling**<br>`generate(pos, ExtMove* list)` fills a pre-allocated buffer. | **Vector Push**<br>`gen.push(move)` involves bounds checking and pointer indirection. | **Moderate.** Pointer arithmetic is faster than vector management. |
+| Feature | Stockfish 17 (`movepick.h` / `movegen.h`) | My Engine (Pre-Refactor) | My Engine (Post-Refactor) | Impact |
+| :--- | :--- | :--- | :--- | :--- |
+| **Memory Storage** | **Fixed-size Array (Stack)**<br>`ExtMove moves[MAX_MOVES]` | **Heap Vector**<br>`Vec<ChessMove>` | **Fixed-size Array (Stack)**<br>`[MaybeUninit<ScoredMove>; 252]` | **Eliminated.** `Vec::with_capacity` overhead removed. |
+| **Sorting Strategy** | **Partial / Lazy**<br>`partial_insertion_sort` or `select<Best>` | **Full Sort**<br>`vec.sort_by_key(...)` | **Lazy Selection**<br>`pick_best` finds 1 best move per call. | **High.** No wasted sorting of pruned moves. |
+| **Generation** | **Pointer Filling**<br>`generate(pos, ExtMove* list)` | **Vector Push**<br>`gen.push(move)` | **List Push**<br>Direct write to stack array. | **Moderate.** Pointer arithmetic is faster. |
 
 ### Recommendation for `movegen.rs`
 
@@ -72,7 +72,7 @@ Refactor `StagedMoveGen` to match SF17's "MovePicker" architecture:
 
 ---
 
-## Summary of Action Plan (Pending Approval)
+## Summary of Action Plan (Status: Implemented)
 
-1.  **Prioritize Speed (MoveGen):** The 5000ms vs 0ms gap is structural. Fixing this requires rewriting `movegen.rs` to remove `Vec` usage.
-2.  **Prioritize Brains (Eval):** Once speed is acceptable, implement **Threats** and upgrade **King Safety** to match SF11's logic density.
+1.  **Prioritize Speed (MoveGen):** (Completed in this PR) Refactored `movegen.rs` to use stack-based `MoveList` and lazy selection sort, eliminating `Vec` allocations. 5000ms gap is reduced.
+2.  **Prioritize Brains (Eval):** (Completed in this PR) Implemented Stockfish 11 logic for King Safety (Zones, Open Files), Passed Pawns (Rank/Proximity), and Endgame Centralization.
