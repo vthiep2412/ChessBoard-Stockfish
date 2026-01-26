@@ -1,6 +1,7 @@
 use chess::{Board, ChessMove, MoveGen};
 use crate::eval;
 use crate::search::{KILLERS, HISTORY};
+use std::mem::MaybeUninit;
 
 // Stage constants
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -14,20 +15,65 @@ pub enum Stage {
     Done,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ScoredMove {
+    pub mv: ChessMove,
+    pub score: i32,
+}
+
+// Fixed-size move list to avoid heap allocation
+const MAX_MOVES: usize = 252; // Enough for almost any position
+
+pub struct MoveList {
+    moves: [MaybeUninit<ScoredMove>; MAX_MOVES],
+    count: usize,
+}
+
+impl MoveList {
+    pub fn new() -> Self {
+        Self {
+            moves: [MaybeUninit::uninit(); MAX_MOVES],
+            count: 0,
+        }
+    }
+
+    pub fn push(&mut self, mv: ChessMove, score: i32) {
+        if self.count < MAX_MOVES {
+            self.moves[self.count] = MaybeUninit::new(ScoredMove { mv, score });
+            self.count += 1;
+        }
+    }
+
+    // Returns a mutable slice of the initialized moves
+    pub fn as_slice_mut(&mut self) -> &mut [ScoredMove] {
+        // Safety: We only access up to self.count, which have been initialized
+        unsafe {
+            std::mem::transmute(&mut self.moves[..self.count])
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+}
+
 pub struct StagedMoveGen<'a> {
     board: &'a Board,
     tt_move: Option<ChessMove>,
     killers: [Option<ChessMove>; 2],
     stage: Stage,
-    captures_buffer: Vec<ChessMove>,
-    quiets_buffer: Vec<ChessMove>,
+    captures: MoveList,
+    quiets: MoveList,
     idx: usize,
 }
 
 impl<'a> StagedMoveGen<'a> {
     pub fn new(board: &'a Board, tt_move: Option<ChessMove>, ply: u8) -> Self {
         // Fetch killers for this ply
-        // Explicitly type closure argument to satisfy compiler
         let killers = KILLERS.with(|k: &std::cell::RefCell<[[Option<ChessMove>; 2]; 64]>|
             k.borrow()[(ply as usize).min(63)]
         );
@@ -37,13 +83,13 @@ impl<'a> StagedMoveGen<'a> {
             tt_move,
             killers,
             stage: Stage::TTMove,
-            captures_buffer: Vec::with_capacity(16),
-            quiets_buffer: Vec::with_capacity(32),
+            captures: MoveList::new(),
+            quiets: MoveList::new(),
             idx: 0,
         }
     }
 
-    // Generate captures and populate buffer
+    // Generate captures and populate list
     fn generate_captures(&mut self) {
         let targets = self.board.color_combined(!self.board.side_to_move());
         let mut gen = MoveGen::new_legal(self.board);
@@ -51,16 +97,6 @@ impl<'a> StagedMoveGen<'a> {
 
         // Add EP capture if available
         if let Some(ep_sq) = self.board.en_passant() {
-            // Note: board.en_passant() returns the victim square? No, standard chess logic says EP square is destination.
-            // Wait, chess crate en_passant() returns Option<Square>.
-            // "The en passant target square is the square that the pawn passed over." (Wikipedia)
-            // But usually engines store the square *behind* the pawn.
-            // chess crate docs: "Returns the en passant square if one exists."
-            // In FEN "e3", e3 is the destination.
-            // Let's assume ep_sq IS the destination (which is empty).
-            // So we just add it to the mask.
-            // Using OR (|) instead of XOR (^) to be safe.
-
             let mask = *targets | chess::BitBoard::from_square(ep_sq);
             gen.set_iterator_mask(mask);
         }
@@ -68,18 +104,12 @@ impl<'a> StagedMoveGen<'a> {
         // Collect and score
         for m in gen {
              if Some(m) == self.tt_move { continue; }
-             self.captures_buffer.push(m);
-        }
 
-        // Sort by MVV-LVA + SEE
-        // Optimization: Sort only when needed (CapturesWinning vs Losing)
-        // For now, simple sort
-        let board = self.board;
-        self.captures_buffer.sort_by_key(|m| {
-            let see = eval::see(board, *m);
-            // Higher is better
-            -(eval::mvv_lva_score(board, *m) + see * 10)
-        });
+             let see = eval::see(self.board, m);
+             // Higher is better
+             let score = eval::mvv_lva_score(self.board, m) + see * 10;
+             self.captures.push(m, score);
+        }
     }
 
     // Generate quiets
@@ -92,8 +122,6 @@ impl<'a> StagedMoveGen<'a> {
             if Some(m) == self.tt_move { continue; }
 
             // Skip ONLY EP captures (pawn moving diagonally to EP square)
-            // Regular quiet moves to EP square (if any?) or other moves shouldn't be skipped here if they are quiets
-            // But EP square is empty, so moves to it are quiets unless it's a pawn capture
             if Some(m.get_dest()) == self.board.en_passant()
                 && self.board.piece_on(m.get_source()) == Some(chess::Piece::Pawn)
                 && m.get_source().get_file() != m.get_dest().get_file()
@@ -101,27 +129,41 @@ impl<'a> StagedMoveGen<'a> {
                 continue;
             }
 
-            self.quiets_buffer.push(m);
-        }
-
-        // Sort by History
-        // Use thread-local access
-        // Optimization: Pre-fetch history scores
-        // We can't easily access thread local in sort closure without overhead
-        // So we extract scores first
-
-        let mut scored_quiets: Vec<(ChessMove, i32)> = self.quiets_buffer.iter().map(|m| {
             let from = m.get_source().to_index();
             let to = m.get_dest().to_index();
-            // Explicit type for closure argument
-            let score = HISTORY.with(|h: &std::cell::RefCell<[[i32; 64]; 64]>|
-                h.borrow()[from][to]
-            );
-            (*m, score)
-        }).collect();
+            let score = HISTORY.with(|h| h.borrow()[from][to]);
+            self.quiets.push(m, score);
+        }
+    }
 
-        scored_quiets.sort_by_key(|(_, s)| -s);
-        self.quiets_buffer = scored_quiets.into_iter().map(|(m, _)| m).collect();
+    // Pick best move from list starting at self.idx
+    fn pick_best(&mut self, list_type: Stage) -> Option<ChessMove> {
+        let list = match list_type {
+            Stage::CapturesWinning => self.captures.as_slice_mut(),
+            Stage::Quiets => self.quiets.as_slice_mut(),
+            _ => return None,
+        };
+
+        if self.idx >= list.len() {
+            return None;
+        }
+
+        // Selection sort: Find best move in remaining portion [idx..len]
+        let mut best_idx = self.idx;
+        let mut best_score = list[best_idx].score;
+
+        for i in (self.idx + 1)..list.len() {
+            if list[i].score > best_score {
+                best_score = list[i].score;
+                best_idx = i;
+            }
+        }
+
+        // Swap best to front (idx)
+        list.swap(self.idx, best_idx);
+        let mv = list[self.idx].mv;
+        self.idx += 1;
+        Some(mv)
     }
 }
 
@@ -142,17 +184,15 @@ impl<'a> Iterator for StagedMoveGen<'a> {
                 },
                 Stage::CapturesWinning => {
                     // Generate once
-                    if self.captures_buffer.is_empty() && self.idx == 0 {
+                    if self.captures.is_empty() && self.idx == 0 {
                         self.generate_captures();
                     }
 
-                    if self.idx < self.captures_buffer.len() {
-                        let mv = self.captures_buffer[self.idx];
-                        self.idx += 1;
-                        return Some(mv);
+                    if let Some(mv) = self.pick_best(Stage::CapturesWinning) {
+                         return Some(mv);
                     }
 
-                    // Done with captures (both winning and losing are in buffer sorted)
+                    // Done with captures
                     self.stage = Stage::CapturesLosing;
                     self.idx = 0;
                 },
@@ -182,19 +222,19 @@ impl<'a> Iterator for StagedMoveGen<'a> {
                      self.idx = 0;
                 },
                 Stage::Quiets => {
-                    if self.quiets_buffer.is_empty() && self.idx == 0 {
+                    if self.quiets.is_empty() && self.idx == 0 {
                         self.generate_quiets();
                     }
-                    if self.idx < self.quiets_buffer.len() {
-                        let mv = self.quiets_buffer[self.idx];
-                        self.idx += 1;
 
-                        // Check if already yielded as killer
-                        if Some(mv) == self.killers[0] || Some(mv) == self.killers[1] {
-                            continue;
-                        }
-
-                        return Some(mv);
+                    loop {
+                         if let Some(mv) = self.pick_best(Stage::Quiets) {
+                              // Check if already yielded as killer
+                              if Some(mv) == self.killers[0] || Some(mv) == self.killers[1] {
+                                  continue;
+                              }
+                              return Some(mv);
+                         }
+                         break;
                     }
                     self.stage = Stage::Done;
                 },
