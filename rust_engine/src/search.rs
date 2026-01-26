@@ -793,8 +793,8 @@ pub fn iterative_deepening(
         }
         
         let (nodes, qnodes) = get_node_counts();
-        println!("info depth {} score cp {} nodes {} qnodes {} total {}",
-            depth, best_score, nodes, qnodes, nodes + qnodes);
+        // println!("info depth {} score cp {} nodes {} qnodes {} total {}",
+        //    depth, best_score, nodes, qnodes, nodes + qnodes);
     }
     
     (best_move, best_score)
@@ -872,7 +872,7 @@ pub fn parallel_root_search(
         let hash = board.get_hash();
         tt_store(hash, depth, best_score, TTFlag::Exact, best_move);
         
-        println!("info depth {} score cp {} pv {}", depth, best_score, current_best_move);
+        // println!("info depth {} score cp {} pv {}", depth, best_score, current_best_move);
     }
     
     (best_move, best_score)

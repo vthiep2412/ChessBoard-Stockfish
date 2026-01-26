@@ -173,7 +173,7 @@ class StockfishHelper:
                     break
                     
         except Exception as e:
-            print(f"Failed to start Stockfish: {e}")
+            # print(f"Failed to start Stockfish: {e}")
             self.process = None
 
     def stop(self):
