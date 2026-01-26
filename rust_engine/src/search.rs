@@ -283,14 +283,13 @@ fn is_debug() -> bool {
 pub fn tt_clear() {
     unsafe {
         if let Some(tt) = GLOBAL_TT.as_ref() {
-            // We can't use write_bytes on Atomics safely/easily, so iterate?
-            // Or just create a new Vec?
-            // Iterating 4M entries is slow (~10-20ms).
-            // But write_bytes (memset) is fast.
-            // Layout of `AtomicU64` is same as `u64`.
-            // So we can memset to 0.
-            let ptr = (*tt.data.get()).as_mut_ptr() as *mut u8;
-            std::ptr::write_bytes(ptr, 0, TT_SIZE * std::mem::size_of::<TTEntry>());
+            // Use Relaxed atomic store to clear safely without data races
+            // Iterating 4M entries takes ~15ms, which is acceptable for 'ucinewgame'
+            let entries = &*tt.data.get();
+            for entry in entries {
+                entry.hash.store(0, Ordering::Relaxed);
+                entry.data.store(0, Ordering::Relaxed);
+            }
 
             if is_debug() {
                 eprintln!("[DEBUG] TT cleared - {} entries zeroed", TT_SIZE);

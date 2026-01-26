@@ -98,7 +98,19 @@ impl EvalState {
             if let Some(ep_sq) = board.en_passant() {
                 if dest == ep_sq {
                     // Captured pawn is implied
-                    self.remove_piece(!us, Piece::Pawn, ep_sq);
+                    // The pawn is NOT on the EP square, but one rank "behind" it (relative to the capture).
+                    // If we are White, we captured on Rank 6, so pawn was on Rank 5. (Index - 8)
+                    // If we are Black, we captured on Rank 3, so pawn was on Rank 4. (Index + 8)
+
+                    let captured_sq_idx = if us == Color::White {
+                        ep_sq.to_index() - 8
+                    } else {
+                        ep_sq.to_index() + 8
+                    };
+
+                    // Safety: ep_sq is valid, and EP rules guarantee the pawn is there.
+                    let captured_sq = unsafe { Square::new(captured_sq_idx as u8) };
+                    self.remove_piece(!us, Piece::Pawn, captured_sq);
                 }
             }
         }
