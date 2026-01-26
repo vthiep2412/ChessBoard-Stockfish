@@ -14,13 +14,60 @@ pub enum Stage {
     Done,
 }
 
+// Stack-based Move Buffer to avoid allocations
+struct MoveBuffer {
+    moves: [Option<ChessMove>; 256],
+    count: usize,
+}
+
+impl MoveBuffer {
+    fn new() -> Self {
+        Self {
+            moves: [None; 256],
+            count: 0,
+        }
+    }
+
+    fn push(&mut self, mv: ChessMove) {
+        if self.count < 256 {
+            self.moves[self.count] = Some(mv);
+            self.count += 1;
+        }
+    }
+
+    fn get(&self, idx: usize) -> Option<ChessMove> {
+        if idx < self.count {
+            self.moves[idx]
+        } else {
+            None
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    fn len(&self) -> usize {
+        self.count
+    }
+
+    fn sort_by_score<F>(&mut self, score_fn: F)
+    where F: Fn(ChessMove) -> i32
+    {
+        // Simple insertion sort or standard sort on slice
+        // We can access the valid slice
+        let slice = &mut self.moves[0..self.count];
+        slice.sort_by_cached_key(|m| -score_fn(m.unwrap()));
+    }
+}
+
 pub struct StagedMoveGen<'a> {
     board: &'a Board,
     tt_move: Option<ChessMove>,
     killers: [Option<ChessMove>; 2],
     stage: Stage,
-    captures_buffer: Vec<ChessMove>,
-    quiets_buffer: Vec<ChessMove>,
+    captures_buffer: MoveBuffer,
+    quiets_buffer: MoveBuffer,
     idx: usize,
 }
 
@@ -37,8 +84,8 @@ impl<'a> StagedMoveGen<'a> {
             tt_move,
             killers,
             stage: Stage::TTMove,
-            captures_buffer: Vec::with_capacity(16),
-            quiets_buffer: Vec::with_capacity(32),
+            captures_buffer: MoveBuffer::new(),
+            quiets_buffer: MoveBuffer::new(),
             idx: 0,
         }
     }
@@ -51,34 +98,22 @@ impl<'a> StagedMoveGen<'a> {
 
         // Add EP capture if available
         if let Some(ep_sq) = self.board.en_passant() {
-            // Note: board.en_passant() returns the victim square? No, standard chess logic says EP square is destination.
-            // Wait, chess crate en_passant() returns Option<Square>.
-            // "The en passant target square is the square that the pawn passed over." (Wikipedia)
-            // But usually engines store the square *behind* the pawn.
-            // chess crate docs: "Returns the en passant square if one exists."
-            // In FEN "e3", e3 is the destination.
-            // Let's assume ep_sq IS the destination (which is empty).
-            // So we just add it to the mask.
-            // Using OR (|) instead of XOR (^) to be safe.
-
             let mask = *targets | chess::BitBoard::from_square(ep_sq);
             gen.set_iterator_mask(mask);
         }
 
-        // Collect and score
+        // Collect
         for m in gen {
              if Some(m) == self.tt_move { continue; }
              self.captures_buffer.push(m);
         }
 
         // Sort by MVV-LVA + SEE
-        // Optimization: Sort only when needed (CapturesWinning vs Losing)
-        // For now, simple sort
         let board = self.board;
-        self.captures_buffer.sort_by_key(|m| {
-            let see = eval::see(board, *m);
+        self.captures_buffer.sort_by_score(|m| {
+            let see = eval::see(board, m);
             // Higher is better
-            -(eval::mvv_lva_score(board, *m) + see * 10)
+            eval::mvv_lva_score(board, m) + see * 10
         });
     }
 
@@ -92,8 +127,6 @@ impl<'a> StagedMoveGen<'a> {
             if Some(m) == self.tt_move { continue; }
 
             // Skip ONLY EP captures (pawn moving diagonally to EP square)
-            // Regular quiet moves to EP square (if any?) or other moves shouldn't be skipped here if they are quiets
-            // But EP square is empty, so moves to it are quiets unless it's a pawn capture
             if Some(m.get_dest()) == self.board.en_passant()
                 && self.board.piece_on(m.get_source()) == Some(chess::Piece::Pawn)
                 && m.get_source().get_file() != m.get_dest().get_file()
@@ -106,22 +139,13 @@ impl<'a> StagedMoveGen<'a> {
 
         // Sort by History
         // Use thread-local access
-        // Optimization: Pre-fetch history scores
-        // We can't easily access thread local in sort closure without overhead
-        // So we extract scores first
-
-        let mut scored_quiets: Vec<(ChessMove, i32)> = self.quiets_buffer.iter().map(|m| {
-            let from = m.get_source().to_index();
-            let to = m.get_dest().to_index();
-            // Explicit type for closure argument
-            let score = HISTORY.with(|h: &std::cell::RefCell<[[i32; 64]; 64]>|
+        self.quiets_buffer.sort_by_score(|m| {
+             let from = m.get_source().to_index();
+             let to = m.get_dest().to_index();
+             HISTORY.with(|h: &std::cell::RefCell<[[i32; 64]; 64]>|
                 h.borrow()[from][to]
-            );
-            (*m, score)
-        }).collect();
-
-        scored_quiets.sort_by_key(|(_, s)| -s);
-        self.quiets_buffer = scored_quiets.into_iter().map(|(m, _)| m).collect();
+             )
+        });
     }
 }
 
@@ -147,7 +171,7 @@ impl<'a> Iterator for StagedMoveGen<'a> {
                     }
 
                     if self.idx < self.captures_buffer.len() {
-                        let mv = self.captures_buffer[self.idx];
+                        let mv = self.captures_buffer.get(self.idx).unwrap();
                         self.idx += 1;
                         return Some(mv);
                     }
@@ -186,7 +210,7 @@ impl<'a> Iterator for StagedMoveGen<'a> {
                         self.generate_quiets();
                     }
                     if self.idx < self.quiets_buffer.len() {
-                        let mv = self.quiets_buffer[self.idx];
+                        let mv = self.quiets_buffer.get(self.idx).unwrap();
                         self.idx += 1;
 
                         // Check if already yielded as killer
