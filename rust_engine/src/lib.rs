@@ -45,15 +45,17 @@ fn get_best_move(
         }
     }
     
-    // NOTE: Don't clear TT here! TT is essential for iterative deepening.
-    // TT should only be cleared at game start (via new_game/tt_clear_all).
-    
     // Fall back to search with aggressiveness setting
     let aggr = aggressiveness.clamp(1, 10);
     
     let (best_move, _score) = if use_parallel && depth >= 6 {
-        // Use parallel search for higher depths
-        search::parallel_root_search(&board, depth, aggr, wtime, btime, movestogo)
+        // Use parallel search for higher depths - detect cores automatically
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .min(64); // Cap at 64 threads to match UCI limit
+
+        search::lazy_smp_search(&board, depth, aggr, wtime, btime, movestogo, threads)
     } else {
         // Use regular iterative deepening
         search::iterative_deepening(&board, depth, aggr, wtime, btime, movestogo)

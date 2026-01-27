@@ -13,7 +13,6 @@ chess = "3.2"
 shakmaty = "0.29"
 shakmaty-syzygy = "0.27"
 rand = "0.8"
-rayon = "1.10"
 
 [[bin]]
 name = "uci"

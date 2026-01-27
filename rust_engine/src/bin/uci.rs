@@ -8,6 +8,7 @@ fn main() {
     let stdin = io::stdin();
     let mut board = Board::default();
     let mut active_search_handle: Option<JoinHandle<()>> = None;
+    let mut num_threads = 1;
 
     // UCI Loop
     for line in stdin.lock().lines() {
@@ -32,12 +33,12 @@ fn main() {
                     match name.to_lowercase().as_str() {
                         "hash" => {
                             if let Ok(_v) = value.parse::<usize>() {
-                                // TODO: Resize Transposition Table
+                                // TODO: Resize Transposition Table (Not implemented yet)
                             }
                         },
                         "threads" => {
-                            if let Ok(_v) = value.parse::<usize>() {
-                                // TODO: Set thread pool size
+                            if let Ok(v) = value.parse::<usize>() {
+                                num_threads = v.max(1).min(64);
                             }
                         },
                         "syzygypath" => {
@@ -59,8 +60,6 @@ fn main() {
             },
             "position" => {
                 if commands.len() < 2 { continue; }
-                // position startpos moves e2e4 ...
-                // position fen ... moves ...
                 let mut moves_idx = 1;
                 if commands[1] == "startpos" {
                     board = Board::default();
@@ -81,14 +80,6 @@ fn main() {
                 if moves_idx < commands.len() && commands[moves_idx] == "moves" {
                     for m_str in &commands[moves_idx+1..] {
                         let move_gen = chess::MoveGen::new_legal(&board);
-                        // Find matching move
-                        // This is a bit inefficient for parsing but fine for UCI
-                        // We need to parse coordinate notation to ChessMove
-                        // The 'chess' crate doesn't have a direct 'from_san' or 'from_uci' easily accessible
-                        // that handles promotion without some work, but let's try a simple iteration search.
-
-                        // We need to construct a move from the string (e.g., "e2e4", "a7a8q")
-                        // For now, let's assume we can match it against legal moves strings.
                         let target = m_str.to_string();
                         let mut found = false;
                         for m in move_gen {
@@ -113,7 +104,7 @@ fn main() {
 
                 // Reset stop flag for new search
                 search::clear_stop_flag();
-                search::reset_node_counts();
+                // Note: reset_node_counts is called inside lazy_smp_search
 
                 // Parse time controls
                 let mut wtime = None;
@@ -134,16 +125,18 @@ fn main() {
                 }
 
                 let search_board = board.clone();
+                let threads = num_threads;
 
-                // Spawn search thread
+                // Spawn search thread (Main Search Orchestrator)
                 active_search_handle = Some(thread::spawn(move || {
-                    let (best_move, _) = search::iterative_deepening(
+                    let (best_move, _) = search::lazy_smp_search(
                         &search_board,
                         depth,
                         5, // default aggressiveness
                         wtime,
                         btime,
-                        movestogo
+                        movestogo,
+                        threads
                     );
 
                     if let Some(mv) = best_move {
