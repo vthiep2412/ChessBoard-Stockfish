@@ -64,10 +64,73 @@ impl EvalState {
         self.mg_material[c_idx] += mg;
         self.eg_material[c_idx] += eg;
     }
+
+    fn remove_piece(&mut self, color: Color, piece: Piece, _sq: Square) {
+        let c_idx = color.to_index();
+        let (mg, eg) = get_material(piece);
+        self.mg_material[c_idx] -= mg;
+        self.eg_material[c_idx] -= eg;
+    }
     
-    pub fn apply_move(&mut self, board: &Board, _mv: chess::ChessMove) {
-        // Optimization: For now, just re-scan. It's safe.
-        *self = Self::new(board);
+    /// Incremental update of evaluation state
+    /// `board` must be the state BEFORE the move was applied
+    pub fn apply_move(&mut self, board: &Board, mv: chess::ChessMove) {
+        let us = board.side_to_move();
+        let source = mv.get_source();
+        let dest = mv.get_dest();
+
+        // We assume the move is legal and the piece exists
+        let piece = board.piece_on(source).unwrap();
+
+        // 1. Remove moving piece from source
+        self.remove_piece(us, piece, source);
+
+        // 2. Handle Capture (Regular)
+        if let Some(captured) = board.piece_on(dest) {
+            self.remove_piece(!us, captured, dest);
+        }
+
+        // 3. Handle En Passant Capture
+        if piece == Piece::Pawn {
+            if let Some(ep_sq) = board.en_passant() {
+                if dest == ep_sq {
+                    // Captured pawn is implied
+                    // The pawn is NOT on the EP square, but one rank "behind" it (relative to the capture).
+                    // If we are White, we captured on Rank 6, so pawn was on Rank 5. (Index - 8)
+                    // If we are Black, we captured on Rank 3, so pawn was on Rank 4. (Index + 8)
+
+                    let captured_sq_idx = if us == Color::White {
+                        ep_sq.to_index() - 8
+                    } else {
+                        ep_sq.to_index() + 8
+                    };
+
+                    // Safety: ep_sq is valid, and EP rules guarantee the pawn is there.
+                    let captured_sq = unsafe { Square::new(captured_sq_idx as u8) };
+                    self.remove_piece(!us, Piece::Pawn, captured_sq);
+                }
+            }
+        }
+
+        // 4. Place piece at dest (Handle Promotion)
+        if let Some(promo) = mv.get_promotion() {
+            self.add_piece(us, promo, dest);
+        } else {
+            self.add_piece(us, piece, dest);
+        }
+
+        // 5. Handle Castling (Rook move)
+        if piece == Piece::King {
+             let diff = (source.get_file().to_index() as i8 - dest.get_file().to_index() as i8).abs();
+             if diff > 1 {
+                 // Castling!
+                 // We don't need exact squares for material update, but we need to know we moved a rook.
+                 // Actually, we just move a rook from corner to next to king.
+                 // Material doesn't change for the rook!
+                 // Since we don't track PSQT in EvalState yet, we do NOTHING for the rook here.
+                 // (Material score is invariant under movement).
+             }
+        }
     }
 }
 
@@ -160,7 +223,7 @@ fn eval_pawns(board: &Board, color: Color) -> i32 {
 
         // Isolated
         let mut neighbors = BitBoard::new(0);
-        let rank_idx = rank.to_index();
+        let _rank_idx = rank.to_index();
         let file_idx = file.to_index();
 
         // Safe square construction using make_square (Rank, File)
@@ -262,6 +325,66 @@ fn eval_mobility(board: &Board, color: Color) -> i32 {
     score
 }
 
+fn eval_pawn_shield(board: &Board, color: Color, king_sq: Square) -> i32 {
+    let pawns = board.pieces(Piece::Pawn) & board.color_combined(color);
+    let rank = king_sq.get_rank();
+    let file_idx = king_sq.get_file().to_index();
+
+    let shield_rank = if color == Color::White {
+        if rank.to_index() >= 7 { return 0; }
+        Rank::from_index(rank.to_index() + 1)
+    } else {
+        if rank.to_index() <= 0 { return 0; }
+        Rank::from_index(rank.to_index() - 1)
+    };
+
+    let mut penalty = 0;
+
+    // Check files: file-1, file, file+1
+    for f in (file_idx.saturating_sub(1))..=(file_idx.saturating_add(1)).min(7) {
+        let file = File::from_index(f);
+        let shield_sq = Square::make_square(shield_rank, file);
+
+        // Check for pawn on shield square
+        // Or one rank further (push)
+        // Simple logic: Check immediate shield square and one forward
+        let sq1 = shield_sq;
+        let sq2_rank = if color == Color::White {
+             if shield_rank.to_index() < 7 { Some(Rank::from_index(shield_rank.to_index() + 1)) } else { None }
+        } else {
+             if shield_rank.to_index() > 0 { Some(Rank::from_index(shield_rank.to_index() - 1)) } else { None }
+        };
+
+        let mut found = false;
+        if (BitBoard::from_square(sq1) & pawns).0 != 0 {
+            found = true;
+        } else if let Some(r2) = sq2_rank {
+            let sq2 = Square::make_square(r2, file);
+            if (BitBoard::from_square(sq2) & pawns).0 != 0 {
+                found = true;
+            }
+        }
+
+        if !found {
+            // Missing shield pawn
+            penalty += 20;
+
+            // Check for open file (no pawns of either color)
+            let all_pawns = board.pieces(Piece::Pawn);
+            // Re-use file_bb logic locally for file 'f'
+            let mut bb_val = 0x0101010101010101u64;
+            bb_val <<= f;
+            let file_mask = BitBoard::new(bb_val);
+
+            if (file_mask & all_pawns).0 == 0 {
+                penalty += 30; // Fully open file near king
+            }
+        }
+    }
+
+    -penalty
+}
+
 fn eval_king_safety(board: &Board, color: Color) -> i32 {
     let us = board.color_combined(color);
     let them = board.color_combined(!color);
@@ -289,7 +412,6 @@ fn eval_king_safety(board: &Board, color: Color) -> i32 {
     let mut attackers_count = 0;
 
     // Check enemy pieces attacking the zone
-    // Iterate enemy pieces (except pawns, usually handled separately)
     for piece in [Piece::Knight, Piece::Bishop, Piece::Rook, Piece::Queen] {
         let pieces = board.pieces(piece) & them;
         for sq in pieces {
@@ -318,10 +440,10 @@ fn eval_king_safety(board: &Board, color: Color) -> i32 {
     if attackers_count > 0 || attack_units > 0 {
         // Use lookup table
         let index = (attack_units as usize * attackers_count).min(99);
-        -SAFETY_TABLE[index] // Penalty for us (being attacked)
-    } else {
-        0
+        score -= SAFETY_TABLE[index]; // Penalty for us (being attacked)
     }
+
+    score
 }
 
 // Encourages king to centralize in endgame

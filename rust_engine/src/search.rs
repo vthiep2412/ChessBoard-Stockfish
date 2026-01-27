@@ -15,29 +15,36 @@ use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 const TT_SIZE: usize = 1 << 22;
 const TT_MASK: usize = TT_SIZE - 1;
 
-/// Compact TT entry - 16 bytes total
-#[derive(Clone, Copy)]
+/// Atomic TT entry - 16 bytes total (2 x u64)
+/// Layout of `data`:
+/// 0-15: best_move (u16)
+/// 16-31: score (i16 as u16)
+/// 32-39: depth (u8)
+/// 40-47: flag (u8)
+/// 48-63: unused/padding
 #[repr(C)]
 pub struct TTEntry {
-    hash: u64,              // Full hash for collision detection
-    pub best_move: u16,         // Encoded move (from 6 bits + to 6 bits + promo 4 bits)
-    pub score: i16,             // Score (clamped to i16 range)
-    pub depth: u8,              // Search depth
-    pub flag: u8,               // 0=None, 1=Exact, 2=Alpha, 3=Beta
-    _padding: [u8; 2],      // Alignment padding
+    hash: AtomicU64,
+    data: AtomicU64,
 }
 
 impl Default for TTEntry {
     fn default() -> Self {
         Self {
-            hash: 0,
-            best_move: 0,
-            score: 0,
-            depth: 0,
-            flag: 0,
-            _padding: [0; 2],
+            hash: AtomicU64::new(0),
+            data: AtomicU64::new(0),
         }
     }
+}
+
+/// Unpacked TT Data
+#[derive(Clone, Copy)]
+pub struct TTEntryData {
+    pub hash: u64,
+    pub best_move: u16,
+    pub score: i16,
+    pub depth: u8,
+    pub flag: u8,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -133,7 +140,7 @@ fn get_tt() -> *mut TTEntry {
     unsafe {
         INIT.call_once(|| {
             let mut v = Vec::with_capacity(TT_SIZE);
-            v.resize(TT_SIZE, TTEntry::default());
+            v.resize_with(TT_SIZE, TTEntry::default);
             GLOBAL_TT = Some(GlobalTT {
                 data: UnsafeCell::new(v),
             });
@@ -142,39 +149,119 @@ fn get_tt() -> *mut TTEntry {
     }
 }
 
-/// Probe the transposition table - ZERO OVERHEAD
+/// Probe the transposition table - LOCKLESS & ATOMIC
 #[inline(always)]
-pub fn tt_probe(hash: u64) -> Option<(TTEntry, TTFlag)> {
+pub fn tt_probe(hash: u64) -> Option<(TTEntryData, TTFlag)> {
     let idx = (hash as usize) & TT_MASK;
     // SAFETY: idx is always < TT_SIZE due to mask, TT is initialized
-    let entry = unsafe { *get_tt().add(idx) };
-    if entry.hash == hash && entry.flag != 0 {
-        Some((entry, TTFlag::from(entry.flag)))
+    let entry = unsafe { &*get_tt().add(idx) };
+
+    // Read Key -> Data -> Key (Seqlock-style consistency check)
+    let key = entry.hash.load(Ordering::Acquire);
+    if key != hash {
+        return None;
+    }
+
+    let data = entry.data.load(Ordering::Acquire);
+
+    // Double-check key to ensure data belongs to this key
+    let key2 = entry.hash.load(Ordering::Acquire);
+    if key2 != key {
+        return None;
+    }
+
+    // Unpack
+    let best_move = (data & 0xFFFF) as u16;
+    let score = ((data >> 16) & 0xFFFF) as i16;
+    let depth_entry = ((data >> 32) & 0xFF) as u8;
+    let flag_val = ((data >> 40) & 0xFF) as u8;
+
+    if flag_val != 0 {
+        let unpacked = TTEntryData {
+            hash: key,
+            best_move,
+            score,
+            depth: depth_entry,
+            flag: flag_val,
+        };
+        Some((unpacked, TTFlag::from(flag_val)))
     } else {
         None
     }
 }
 
-/// Store an entry in the transposition table - ZERO OVERHEAD
+/// Store an entry in the transposition table - LOCKLESS & ATOMIC
 #[inline(always)]
 fn tt_store(hash: u64, depth: u8, score: i32, flag: TTFlag, best_move: Option<ChessMove>) {
     let idx = (hash as usize) & TT_MASK;
     // SAFETY: idx is always < TT_SIZE due to mask, TT is initialized
-    unsafe {
-        let entry_ptr = get_tt().add(idx);
-        let existing = *entry_ptr;
+    let entry = unsafe { &*get_tt().add(idx) };
+
+    // Read existing depth to decide replacement strategy
+    // We can read data loosely here
+    let old_data = entry.data.load(Ordering::Relaxed);
+    let old_depth = ((old_data >> 32) & 0xFF) as u8;
+    let old_hash = entry.hash.load(Ordering::Relaxed);
+
+    // Replace if:
+    // 1. New search is deeper
+    // 2. Same position (hash matches) - we update with better info? Or just overwrite?
+    // 3. Old entry is empty/invalid (hash=0 or flag=0)
+    // 4. Aging (not implemented yet, but deeper is usually enough)
+
+    if depth >= old_depth || old_hash == hash || old_hash == 0 {
+        let mv_encoded = best_move.map(encode_move).unwrap_or(0) as u64;
+        let score_encoded = (score.clamp(-30000, 30000) as i16 as u16) as u64;
+        let depth_encoded = depth as u64;
+        let flag_encoded = flag as u64;
         
-        // Depth-preferred replacement: replace if deeper or same position
-        if depth >= existing.depth || existing.hash == hash || existing.flag == 0 {
-            *entry_ptr = TTEntry {
-                hash,
-                depth,
-                score: score.clamp(-30000, 30000) as i16,
-                flag: flag as u8,
-                best_move: best_move.map(encode_move).unwrap_or(0),
-                _padding: [0; 2],
-            };
-        }
+        let new_data = mv_encoded
+                     | (score_encoded << 16)
+                     | (depth_encoded << 32)
+                     | (flag_encoded << 40);
+
+        // Store: Update data first, then hash (Key) to ensure consistency for readers
+        // Actually, for Seqlock reader (Key -> Data -> Key), we should:
+        // 1. Invalidate Key? (Optional, but helps reader fail fast)
+        // 2. Write Data
+        // 3. Write Key
+
+        // If we don't invalidate, Reader might see Old Key, New Data, Old Key.
+        // If Old Key == New Key (Same Pos), New Data is valid.
+        // If Old Key != New Key (Collision/Overwrite), Reader sees Old Key... wait.
+
+        // Correct order for "Key1 -> Data -> Key2" check:
+        // Writer:
+        // entry.data.store(..., Release);
+        // entry.hash.store(..., Release);
+
+        // Reader:
+        // k1 = hash.load(Acquire)
+        // d = data.load(Acquire)
+        // k2 = hash.load(Acquire)
+        // if k1 == k2 == target_hash -> Valid.
+
+        // Scenario: Writer updates.
+        // W: Data = New
+        // W: Hash = New
+
+        // R: Reads Hash (Old). Matches Target?
+        //    If Target == Old (we are looking up old pos), and Writer is overwriting it...
+        //    R: Reads Data (New).
+        //    R: Reads Hash (New).
+        //    k1 (Old) != k2 (New). -> Abort. Safe.
+
+        // Scenario: Writer updates SAME position.
+        // W: Data = New (better score)
+        // W: Hash = Same
+
+        // R: Reads Hash (Same). Matches Target.
+        // R: Reads Data (New).
+        // R: Reads Hash (Same).
+        // k1 == k2 == Target. -> Uses New Data. Safe.
+
+        entry.data.store(new_data, Ordering::Release);
+        entry.hash.store(hash, Ordering::Release);
     }
 }
 
@@ -196,9 +283,14 @@ fn is_debug() -> bool {
 pub fn tt_clear() {
     unsafe {
         if let Some(tt) = GLOBAL_TT.as_ref() {
-            let ptr = (*tt.data.get()).as_mut_ptr();
-            // Reset entire TT memory to 0 (zeroed entries have flag=0 = invalid)
-            std::ptr::write_bytes(ptr, 0, TT_SIZE);
+            // Use Relaxed atomic store to clear safely without data races
+            // Iterating 4M entries takes ~15ms, which is acceptable for 'ucinewgame'
+            let entries = &*tt.data.get();
+            for entry in entries {
+                entry.hash.store(0, Ordering::Relaxed);
+                entry.data.store(0, Ordering::Relaxed);
+            }
+
             if is_debug() {
                 eprintln!("[DEBUG] TT cleared - {} entries zeroed", TT_SIZE);
             }
@@ -475,16 +567,37 @@ fn negamax(
     let is_endgame = phase < 12;
     
     let tt_result = tt_probe(hash);
-    let tt_move: Option<ChessMove> = tt_result.as_ref().and_then(|(e, _)| decode_move(e.best_move, board));
+
+    // Decode AND VALIDATE the TT move
+    // If it's a collision or corrupted, board.legal(mv) ensures we don't return garbage.
+    let tt_move: Option<ChessMove> = tt_result.as_ref()
+        .and_then(|(e, _)| decode_move(e.best_move, board))
+        .filter(|&mv| board.legal(mv)); // <--- CRITICAL FIX: Verify move legality!
     
     if let Some((entry, flag)) = tt_result {
         if entry.depth >= depth {
             let score = entry.score as i32;
-            match flag {
-                TTFlag::Exact => return (score, tt_move),
-                TTFlag::Alpha => if score <= alpha { return (alpha, tt_move); },
-                TTFlag::Beta => if score >= beta { return (beta, tt_move); },
-                TTFlag::None => {}
+
+            // Only cut off if we have a valid move (for Exact/Beta) or if score check passes
+            // Actually, we can return score without move for Beta cutoff if score >= beta?
+            // But if we return (score, tt_move), and tt_move is None (illegal), caller might be confused?
+            // negamax signature is (i32, Option<ChessMove>).
+            // If we return score, we should return the move if we have it.
+
+            // If tt_move was filtered out (illegal), we should NOT use this TT entry for cutoff
+            // because the score might rely on that illegal move being best.
+            // Exception: Alpha cutoff (fail low) doesn't rely on a move?
+            // But safe to just ignore corrupted/illegal entries.
+
+            let is_valid_entry = tt_move.is_some() || (flag == TTFlag::Alpha);
+
+            if is_valid_entry {
+                match flag {
+                    TTFlag::Exact => return (score, tt_move),
+                    TTFlag::Alpha => if score <= alpha { return (alpha, tt_move); },
+                    TTFlag::Beta => if score >= beta { return (beta, tt_move); },
+                    TTFlag::None => {}
+                }
             }
         }
     }
@@ -537,9 +650,9 @@ fn negamax(
             // Only search if SEE >= 0 (simple check to avoid bad captures)
             if eval::see(board, mv) < 0 { continue; }
 
-            let new_board = board.make_move_new(mv);
             let mut new_eval = eval_state;
-            new_eval.apply_move(&new_board, mv);
+            new_eval.apply_move(board, mv);
+            let new_board = board.make_move_new(mv);
 
             let (score, _) = negamax(&new_board, new_eval, Some(mv), probcut_depth, -probcut_beta, -probcut_beta + 1, ply + 1, false, time_manager);
             let score = -score;
@@ -595,9 +708,9 @@ fn negamax(
                             break;
                         }
 
-                        let new_board = board.make_move_new(other_mv);
                         let mut new_eval = eval_state;
-                        new_eval.apply_move(&new_board, other_mv);
+                        new_eval.apply_move(board, other_mv);
+                        let new_board = board.make_move_new(other_mv);
 
                         let (score, _) = negamax(&new_board, new_eval, Some(other_mv), se_depth, -se_beta, -se_beta + 1, ply + 1, false, time_manager);
                         let score = -score;
@@ -637,9 +750,9 @@ fn negamax(
             }
         }
         
-        let new_board = board.make_move_new(mv);
         let mut new_eval = eval_state;
-        new_eval.apply_move(&new_board, mv);
+        new_eval.apply_move(board, mv);
+        let new_board = board.make_move_new(mv);
         let gives_check = *new_board.checkers() != chess::EMPTY;
         
         let mut reduction = 0u8;
@@ -796,6 +909,11 @@ pub fn iterative_deepening(
             depth, best_score, nodes, qnodes, nodes + qnodes);
     }
     
+    // Fallback: If we have NO best move (e.g. panic at depth 1), pick any legal move
+    if best_move.is_none() {
+        best_move = MoveGen::new_legal(board).next();
+    }
+
     (best_move, best_score)
 }
 
@@ -846,9 +964,9 @@ pub fn parallel_root_search(
                     }
                 }
                 
-                let new_board = board.make_move_new(mv);
                 let mut new_eval = root_eval;
-                new_eval.apply_move(&new_board, mv);
+                new_eval.apply_move(board, mv);
+                let new_board = board.make_move_new(mv);
                 let (score, _) = negamax(&new_board, new_eval, Some(mv), depth - 1, -INFINITY, INFINITY, 1, true, time_manager);
                 (mv, -score)
             })
