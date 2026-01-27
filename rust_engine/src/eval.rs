@@ -38,6 +38,7 @@ const MOBILITY_BONUS: [i32; 5] = [0, 4, 3, 2, 1]; // Bonus per safe square for N
 pub struct EvalState {
     pub mg_material: [i32; 2], // [White, Black]
     pub eg_material: [i32; 2],
+    pub phase: i32,            // Game phase (24 = Start, 0 = End)
 }
 
 impl EvalState {
@@ -45,17 +46,29 @@ impl EvalState {
         let mut s = Self {
             mg_material: [0, 0],
             eg_material: [0, 0],
+            phase: 0,
         };
         
+        // Initial phase calculation
+        s.phase = game_phase(board);
+
         for sq in 0..64 {
             // Safety: sq is 0..64, so it is a valid square index.
             let square = unsafe { Square::new(sq as u8) };
             if let Some(piece) = board.piece_on(square) {
                 let color = board.color_on(square).unwrap();
-                s.add_piece(color, piece, square);
+                s.add_material_only(color, piece);
             }
         }
         s
+    }
+
+    // Helper to add material only (phase is pre-calc in new)
+    fn add_material_only(&mut self, color: Color, piece: Piece) {
+        let c_idx = color.to_index();
+        let (mg, eg) = get_material(piece);
+        self.mg_material[c_idx] += mg;
+        self.eg_material[c_idx] += eg;
     }
 
     fn add_piece(&mut self, color: Color, piece: Piece, _sq: Square) {
@@ -63,6 +76,7 @@ impl EvalState {
         let (mg, eg) = get_material(piece);
         self.mg_material[c_idx] += mg;
         self.eg_material[c_idx] += eg;
+        self.phase = (self.phase + get_phase_value(piece)).min(24);
     }
 
     fn remove_piece(&mut self, color: Color, piece: Piece, _sq: Square) {
@@ -70,6 +84,7 @@ impl EvalState {
         let (mg, eg) = get_material(piece);
         self.mg_material[c_idx] -= mg;
         self.eg_material[c_idx] -= eg;
+        self.phase = (self.phase - get_phase_value(piece)).max(0);
     }
     
     /// Incremental update of evaluation state
@@ -96,16 +111,12 @@ impl EvalState {
                 if dest == ep_sq {
                     // Captured pawn is implied
                     // The pawn is NOT on the EP square, but one rank "behind" it (relative to the capture).
-                    // If we are White, we captured on Rank 6, so pawn was on Rank 5. (Index - 8)
-                    // If we are Black, we captured on Rank 3, so pawn was on Rank 4. (Index + 8)
-
                     let captured_sq_idx = if us == Color::White {
                         ep_sq.to_index() - 8
                     } else {
                         ep_sq.to_index() + 8
                     };
 
-                    // Safety: ep_sq is valid, and EP rules guarantee the pawn is there.
                     let captured_sq = unsafe { Square::new(captured_sq_idx as u8) };
                     self.remove_piece(!us, Piece::Pawn, captured_sq);
                 }
@@ -120,17 +131,7 @@ impl EvalState {
         }
 
         // 5. Handle Castling (Rook move)
-        if piece == Piece::King {
-             let diff = (source.get_file().to_index() as i8 - dest.get_file().to_index() as i8).abs();
-             if diff > 1 {
-                 // Castling!
-                 // We don't need exact squares for material update, but we need to know we moved a rook.
-                 // Actually, we just move a rook from corner to next to king.
-                 // Material doesn't change for the rook!
-                 // Since we don't track PSQT in EvalState yet, we do NOTHING for the rook here.
-                 // (Material score is invariant under movement).
-             }
-        }
+        // Castling moves the rook, but since Rooks don't affect Phase and Material is invariant, NO-OP here.
     }
 }
 
@@ -145,18 +146,21 @@ fn get_material(piece: Piece) -> (i32, i32) {
     }
 }
 
+fn get_phase_value(piece: Piece) -> i32 {
+    match piece {
+        Piece::Knight | Piece::Bishop => 1,
+        Piece::Rook => 2,
+        Piece::Queen => 4,
+        _ => 0,
+    }
+}
+
 pub fn game_phase(board: &Board) -> i32 {
     let mut phase = 0;
     for sq in 0..64 {
-         // Safety: sq is 0..64, so it is a valid square index.
          let square = unsafe { Square::new(sq as u8) };
          if let Some(piece) = board.piece_on(square) {
-             phase += match piece {
-                 Piece::Knight | Piece::Bishop => 1,
-                 Piece::Rook => 2,
-                 Piece::Queen => 4,
-                 _ => 0,
-             };
+             phase += get_phase_value(piece);
          }
     }
     phase // 0 (Endgame) to 24 (Startpos)
@@ -257,24 +261,19 @@ fn eval_pawns(board: &Board, color: Color) -> i32 {
             passed_mask |= front_span(color, s);
         }
 
-        // Proper passed pawn check: No enemy pawns in front or on adjacent files in front
+        // Proper passed pawn check
         if (passed_mask & enemy_pawns).0 == 0 {
             let r = if color == Color::White { rank.to_index() } else { 7 - rank.to_index() };
-
             // Base bonus
             let mut bonus = PAWN_PASSED[r];
-
-            // Scale based on king proximity (endgame logic)
-            // If friendly king is close, good. If enemy king is far, good.
+            // Scale based on king proximity
             let king_sq = board.king_square(color);
             let enemy_king_sq = board.king_square(!color);
 
             let dist_us = distance(king_sq, sq);
             let dist_them = distance(enemy_king_sq, sq);
 
-            // Simple heuristic: 5 points per square advantage
             bonus += (dist_them as i32 - dist_us as i32) * 5;
-
             score += bonus;
         }
     }
@@ -297,7 +296,7 @@ fn eval_mobility(board: &Board, color: Color) -> i32 {
     // Knights
     for sq in board.pieces(Piece::Knight) & us {
         let moves = chess::get_knight_moves(sq);
-        let safe = moves & !*us; // Legal moves (capture or quiet)
+        let safe = moves & !*us; 
         score += safe.popcnt() as i32 * MOBILITY_BONUS[1];
     }
 
@@ -325,66 +324,7 @@ fn eval_mobility(board: &Board, color: Color) -> i32 {
     score
 }
 
-fn eval_pawn_shield(board: &Board, color: Color, king_sq: Square) -> i32 {
-    let pawns = board.pieces(Piece::Pawn) & board.color_combined(color);
-    let rank = king_sq.get_rank();
-    let file_idx = king_sq.get_file().to_index();
-
-    let shield_rank = if color == Color::White {
-        if rank.to_index() >= 7 { return 0; }
-        Rank::from_index(rank.to_index() + 1)
-    } else {
-        if rank.to_index() <= 0 { return 0; }
-        Rank::from_index(rank.to_index() - 1)
-    };
-
-    let mut penalty = 0;
-
-    // Check files: file-1, file, file+1
-    for f in (file_idx.saturating_sub(1))..=(file_idx.saturating_add(1)).min(7) {
-        let file = File::from_index(f);
-        let shield_sq = Square::make_square(shield_rank, file);
-
-        // Check for pawn on shield square
-        // Or one rank further (push)
-        // Simple logic: Check immediate shield square and one forward
-        let sq1 = shield_sq;
-        let sq2_rank = if color == Color::White {
-             if shield_rank.to_index() < 7 { Some(Rank::from_index(shield_rank.to_index() + 1)) } else { None }
-        } else {
-             if shield_rank.to_index() > 0 { Some(Rank::from_index(shield_rank.to_index() - 1)) } else { None }
-        };
-
-        let mut found = false;
-        if (BitBoard::from_square(sq1) & pawns).0 != 0 {
-            found = true;
-        } else if let Some(r2) = sq2_rank {
-            let sq2 = Square::make_square(r2, file);
-            if (BitBoard::from_square(sq2) & pawns).0 != 0 {
-                found = true;
-            }
-        }
-
-        if !found {
-            // Missing shield pawn
-            penalty += 20;
-
-            // Check for open file (no pawns of either color)
-            let all_pawns = board.pieces(Piece::Pawn);
-            // Re-use file_bb logic locally for file 'f'
-            let mut bb_val = 0x0101010101010101u64;
-            bb_val <<= f;
-            let file_mask = BitBoard::new(bb_val);
-
-            if (file_mask & all_pawns).0 == 0 {
-                penalty += 30; // Fully open file near king
-            }
-        }
-    }
-
-    -penalty
-}
-
+// FAST King Safety & Pawn Shield
 fn eval_king_safety(board: &Board, color: Color) -> i32 {
     let us = board.color_combined(color);
     let them = board.color_combined(!color);
@@ -392,79 +332,93 @@ fn eval_king_safety(board: &Board, color: Color) -> i32 {
     let king_sq = board.king_square(color);
     let mut score = 0;
 
-    // King Zone: Squares around king + 2 squares in front
+    // 1. Piece Attacks on King Zone
     let king_moves = chess::get_king_moves(king_sq);
-    let mut zone = king_moves | BitBoard::from_square(king_sq);
+    let zone = king_moves | BitBoard::from_square(king_sq);
 
-    // Add squares in front (e.g. if White King at G1, add G2, H2, F2, maybe G3)
-    // Simplified: Use the king ring plus forward push
-
-    // Safety: Manual shifting, need to be careful with overflow/underflow logic (though wrapping handles it for bits)
-    // Using BitBoard specific shifts is safer if available, but chess crate uses u64
+    // Shift forward for "extended zone"
     let k_bb = BitBoard::from_square(king_sq);
-    // Shift forward 1 and 2 ranks
     let f1 = if color == Color::White { k_bb.0 << 8 } else { k_bb.0 >> 8 };
     let f2 = if color == Color::White { k_bb.0 << 16 } else { k_bb.0 >> 16 };
-
-    // Combine into a danger zone (roughly) around the king and in front
-    zone = zone | BitBoard::new(f1) | BitBoard::new(f2);
+    let full_zone = zone | BitBoard::new(f1) | BitBoard::new(f2);
 
     let mut attack_units = 0;
     let mut attackers_count = 0;
 
-    // Check enemy pieces attacking the zone
     for piece in [Piece::Knight, Piece::Bishop, Piece::Rook, Piece::Queen] {
         let pieces = board.pieces(piece) & them;
         for sq in pieces {
             let attacks = attacks_by_piece(piece, sq, occ);
-
-            // Attack on Zone
-            if (attacks & zone).0 != 0 {
+            if (attacks & full_zone).0 != 0 {
                 attack_units += ATTACK_WEIGHT[piece.to_index()];
                 attackers_count += 1;
-
-                // Bonus weight for "Safe Checks" could go here
             }
         }
     }
 
-    // Pawn Storm / Open File penalty
-    // If king is on a file with no friendly pawns in front, it's open/semi-open
-    let file = king_sq.get_file();
-    let file_mask = file_bb(king_sq);
-    let friendly_pawns = board.pieces(Piece::Pawn) & us;
+    // 2. Pawn Shield (Optimized Bitwise)
+    // Shield squares: The 3 squares in front of the king
+    let shield_mask = if color == Color::White {
+        // Shift King left-up, up, right-up (needs overflow check or file mask)
+        // Simplest: Just use generic shifts with file checks
+        let k = king_sq.to_index();
+        let mut mask = 0u64;
+        if k < 56 { // Not on Rank 8 (impossible for valid king anyway)
+            let up = k + 8;
+            mask |= 1 << up; // Directly in front
+            if king_sq.get_file().to_index() > 0 { mask |= 1 << (up - 1); } // Front-Left
+            if king_sq.get_file().to_index() < 7 { mask |= 1 << (up + 1); } // Front-Right
+        }
+        BitBoard::new(mask)
+    } else {
+        // Black
+        let k = king_sq.to_index();
+        let mut mask = 0u64;
+        if k > 7 { // Not on Rank 1
+            let down = k - 8;
+            mask |= 1 << down;
+            if king_sq.get_file().to_index() > 0 { mask |= 1 << (down - 1); }
+            if king_sq.get_file().to_index() < 7 { mask |= 1 << (down + 1); }
+        }
+        BitBoard::new(mask)
+    };
 
-    if (friendly_pawns & file_mask).0 == 0 {
-        attack_units += 5; // Open file penalty
+    let our_pawns = board.pieces(Piece::Pawn) & us;
+    let shield_count = (shield_mask & our_pawns).popcnt();
+
+    // Penalty logic: 
+    // Ideally 3 pawns. 
+    // Missing 1: Small penalty
+    // Missing 2: Bigger penalty
+    // Missing 3: Huge penalty (Open King)
+    let missing = 3 - shield_count.min(3);
+    if missing > 0 {
+        // Polynomial penalty: 0->0, 1->10, 2->30, 3->60
+        score -= (missing * missing + missing) as i32 * 10; 
     }
 
+    // Storm detection: Enemy pawns attacking shield?
+    let enemy_pawns = board.pieces(Piece::Pawn) & them;
+    // Simple check: Enemy pawns on adjacent files and close rank?
+    // TODO: Add storm logic later if needed (keeping it simple and fast for now)
+    
     if attackers_count > 0 || attack_units > 0 {
-        // Use lookup table
-        let index = (attack_units as usize * attackers_count).min(99);
-        score -= SAFETY_TABLE[index]; // Penalty for us (being attacked)
+        let index = (attack_units as usize).min(49);
+        score -= SAFETY_TABLE[index];
     }
 
     score
 }
 
-// Encourages king to centralize in endgame
 fn eval_king_endgame(board: &Board, color: Color) -> i32 {
     let king_sq = board.king_square(color);
     let file = king_sq.get_file().to_index();
     let rank = king_sq.get_rank().to_index();
 
-    // Distance from center (3.5, 3.5)
-    // Dist from (3,3), (3,4), (4,3), (4,4)
-    // Center squares are E4(4,3), D4(3,3), E5(4,4), D5(3,4)
-    // Simply: max(|file-3.5|, |rank-3.5|) minimized
-    // In integer math: sum of distance to center ranks/files
-
     let dist_file = (file as i32 - 3).abs().min((file as i32 - 4).abs());
     let dist_rank = (rank as i32 - 3).abs().min((rank as i32 - 4).abs());
 
     let dist = dist_file + dist_rank;
-
-    // Bonus for being close to center: (MaxDist - Dist) * Weight
     (14 - dist) * 10
 }
 
@@ -473,15 +427,15 @@ pub fn evaluate_with_state(board: &Board, state: &EvalState, alpha: i32, beta: i
     let us = board.side_to_move();
     let them = !us;
 
-    let phase = game_phase(board);
+    // O(1) Phase from State
+    let phase = state.phase;
     let mg_weight = phase.min(24);
     let eg_weight = 24 - mg_weight;
     
     let mut score_mg = state.mg_material[us.to_index()] - state.mg_material[them.to_index()];
     let mut score_eg = state.eg_material[us.to_index()] - state.eg_material[them.to_index()];
     
-    // Lazy Evaluation (Fast Path)
-    // If material score is significantly outside alpha/beta, return early
+    // Lazy Evaluation
     const LAZY_MARGIN: i32 = 150;
     let stand_pat = (score_mg * mg_weight + score_eg * eg_weight) / 24;
 
@@ -492,13 +446,12 @@ pub fn evaluate_with_state(board: &Board, state: &EvalState, alpha: i32, beta: i
         return stand_pat;
     }
 
-    // Full Evaluation (Pawns, Mobility, Safety)
-    
+    // Full Evaluation
     // Pawn Structure
     let pawns_us = eval_pawns(board, us);
     let pawns_them = eval_pawns(board, them);
     score_mg += pawns_us - pawns_them;
-    score_eg += (pawns_us - pawns_them) * 2; // Pawns more important in endgame?
+    score_eg += (pawns_us - pawns_them) * 2;
     
     // Mobility
     let mob_us = eval_mobility(board, us);
@@ -506,8 +459,8 @@ pub fn evaluate_with_state(board: &Board, state: &EvalState, alpha: i32, beta: i
     score_mg += mob_us - mob_them;
     score_eg += mob_us - mob_them;
 
-    // King Safety (Only MG usually)
-    let safety_us = eval_king_safety(board, us); // Negative value (penalty)
+    // King Safety
+    let safety_us = eval_king_safety(board, us);
     let safety_them = eval_king_safety(board, them);
     score_mg += safety_us - safety_them;
 
@@ -528,7 +481,6 @@ pub fn evaluate_with_state(board: &Board, state: &EvalState, alpha: i32, beta: i
 pub fn evaluate(board: &Board) -> i32 {
     let state = EvalState::new(board);
     let mut score = evaluate_with_state(board, &state, -30000, 30000);
-    // Public API expects White-relative score, but evaluate_with_state returns STM-relative
     if board.side_to_move() == chess::Color::Black {
         score = -score;
     }
@@ -539,18 +491,17 @@ pub fn evaluate_lazy(board: &Board, alpha: i32, beta: i32) -> i32 {
     let state = EvalState::new(board);
     let us = board.side_to_move();
     let them = !us;
-    // Material only for lazy
+    
     let score_mg = state.mg_material[us.to_index()] - state.mg_material[them.to_index()];
     let score_eg = state.eg_material[us.to_index()] - state.eg_material[them.to_index()];
 
-    let phase = game_phase(board);
+    // O(1) Phase from State
+    let phase = state.phase;
     let mg_weight = phase.min(24);
     let eg_weight = 24 - mg_weight;
 
     let score = (score_mg * mg_weight + score_eg * eg_weight) / 24;
 
-    // Margin-based early exit (fail-soft)
-    // If the material score is way off, return bound
     let margin = 200;
     if score < alpha - margin {
         return alpha;
@@ -564,15 +515,13 @@ pub fn evaluate_lazy(board: &Board, alpha: i32, beta: i32) -> i32 {
 
 // Helpers for Search
 pub fn is_capture(board: &Board, mv: chess::ChessMove) -> bool {
-    // Check standard capture, promotion, or En Passant
-    // Note: We treat promotions as captures for search pruning purposes (high value events)
     board.piece_on(mv.get_dest()).is_some()
     || mv.get_promotion().is_some()
     || (board.en_passant() == Some(mv.get_dest()) && board.piece_on(mv.get_source()) == Some(chess::Piece::Pawn))
 }
 
 pub fn mvv_lva_score(board: &Board, mv: chess::ChessMove) -> i32 {
-    let victim = board.piece_on(mv.get_dest()).unwrap_or(Piece::Pawn); // En passant is pawn
+    let victim = board.piece_on(mv.get_dest()).unwrap_or(Piece::Pawn); 
     let attacker = board.piece_on(mv.get_source()).unwrap_or(Piece::Pawn);
     
     let v_val = match victim {
@@ -587,7 +536,6 @@ pub fn mvv_lva_score(board: &Board, mv: chess::ChessMove) -> i32 {
     v_val * 10 - a_val
 }
 
-// Static Exchange Evaluation (SEE) - LVA Approximation
 pub fn see(board: &Board, mv: chess::ChessMove) -> i32 {
     if !is_capture(board, mv) {
         return 0;
@@ -603,6 +551,5 @@ pub fn see(board: &Board, mv: chess::ChessMove) -> i32 {
         }
     }
 
-    // Simple LVA: Victim - Attacker (Optimistic)
     piece_val(victim) - piece_val(attacker)
 }

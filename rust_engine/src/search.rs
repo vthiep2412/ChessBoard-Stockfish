@@ -327,6 +327,9 @@ const INFINITY: i32 = 30000;
 const MATE_SCORE: i32 = 29000;
 const CONTEMPT: i32 = -15; // Slight draw aversion (engine sees draws as bad)
 
+// Thread-local counter to reduce atomic contention (batch updates to global)
+thread_local!(static LOCAL_NODE_COUNTER: std::cell::Cell<u64> = std::cell::Cell::new(0));
+
 static NODE_COUNT: AtomicU64 = AtomicU64::new(0);
 static QNODE_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static STOP_SEARCH: AtomicBool = AtomicBool::new(false);
@@ -478,41 +481,62 @@ fn quiescence(board: &Board, mut alpha: i32, beta: i32, ply: u8) -> i32 {
     }
     
     // Delta pruning
-    const DELTA: i32 = 1000;
-    if stand_pat + DELTA < alpha {
-        return alpha;
+    const DELTA: i32 = 500; // Relaxed from 200 to fix double_edged blindness
+    if stand_pat < alpha - DELTA {
+        // If we are way below alpha, we need a massive capture to recover.
+        // We can't prune if we *might* promote though.
+        let queen_val = 900;
+        if stand_pat + queen_val < alpha {
+            return alpha;
+        }
     }
     
     let mut targets = *board.color_combined(!board.side_to_move());
     if let Some(ep_sq) = board.en_passant() {
-        // En-passant square IS the destination square in chess crate
         targets |= chess::BitBoard::from_square(ep_sq);
     }
 
     let mut gen = MoveGen::new_legal(board);
     gen.set_iterator_mask(targets);
-    let mut captures: Vec<ChessMove> = gen.collect();
     
-    // Sort by MVV-LVA
-    captures.sort_by_key(|m| -eval::mvv_lva_score(board, *m));
+    // Allocation-free MoveList
+    let mut captures = crate::movegen::MoveList::new();
     
-    for mv in captures {
-        // REMOVED SEE pruning to fix blindness
+    for m in gen {
+         // SEE Pruning: Skip bad captures (e.g. QxP protected)
+         // Exception: Promotions are always interesting
+         if !eval::is_capture(board, m) { continue; } // Should be redundant due to mask
+         
+         let see_val = eval::see(board, m);
+         if see_val < 0 {
+             continue;
+         }
+
+         let score = eval::mvv_lva_score(board, m);
+         captures.push(m, score);
+    }
+    
+    // Convert to mutable slice for in-place selection sort
+    let list = captures.as_slice_mut();
+    let len = list.len();
+    
+    for i in 0..len {
+        // Selection sort: find best move in [i..len]
+        let mut best_idx = i;
+        let mut best_score = list[i].score;
         
-        let captured_value = match board.piece_on(mv.get_dest()) {
-            Some(chess::Piece::Pawn) => 100,
-            Some(chess::Piece::Knight) => 320,
-            Some(chess::Piece::Bishop) => 330,
-            Some(chess::Piece::Rook) => 500,
-            Some(chess::Piece::Queen) => 900,
-            _ => 0,
-        };
-        
-        // Increased safety margin from 200 to 900
-        if stand_pat + captured_value + 900 < alpha {
-            continue;
+        for j in (i + 1)..len {
+            if list[j].score > best_score {
+                best_score = list[j].score;
+                best_idx = j;
+            }
         }
         
+        // Swap to front
+        list.swap(i, best_idx);
+        let mv = list[i].mv;
+        
+        // Move processing
         let new_board = board.make_move_new(mv);
         let score = -quiescence(&new_board, -beta, -alpha, ply + 1);
         
@@ -539,9 +563,20 @@ fn negamax(
     null_ok: bool,
     time_manager: Option<TimeManager>,
 ) -> (i32, Option<ChessMove>) {
-    let nodes = NODE_COUNT.fetch_add(1, Ordering::Relaxed);
-    
-    if nodes & 2047 == 0 {
+    // Optimized: Use thread-local counter to batch atomic updates
+    let check_time = LOCAL_NODE_COUNTER.with(|c| {
+        let count = c.get() + 1;
+        c.set(count);
+        if count & 2047 == 0 {
+            // Batch update global stats
+            NODE_COUNT.fetch_add(2048, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    });
+
+    if check_time {
         if STOP_SEARCH.load(Ordering::Relaxed) {
             return (0, None);
         }
@@ -564,32 +599,19 @@ fn negamax(
     
     let hash = board.get_hash();
     let in_check = *board.checkers() != chess::EMPTY;
-    let phase = eval::game_phase(board);
+    let phase = eval_state.phase; // Use O(1) phase
     let is_endgame = phase < 12;
     
     let tt_result = tt_probe(hash);
 
     // Decode AND VALIDATE the TT move
-    // If it's a collision or corrupted, board.legal(mv) ensures we don't return garbage.
     let tt_move: Option<ChessMove> = tt_result.as_ref()
         .and_then(|(e, _)| decode_move(e.best_move, board))
-        .filter(|&mv| board.legal(mv)); // <--- CRITICAL FIX: Verify move legality!
+        .filter(|&mv| board.legal(mv)); 
     
     if let Some((entry, flag)) = tt_result {
         if entry.depth >= depth {
             let score = entry.score as i32;
-
-            // Only cut off if we have a valid move (for Exact/Beta) or if score check passes
-            // Actually, we can return score without move for Beta cutoff if score >= beta?
-            // But if we return (score, tt_move), and tt_move is None (illegal), caller might be confused?
-            // negamax signature is (i32, Option<ChessMove>).
-            // If we return score, we should return the move if we have it.
-
-            // If tt_move was filtered out (illegal), we should NOT use this TT entry for cutoff
-            // because the score might rely on that illegal move being best.
-            // Exception: Alpha cutoff (fail low) doesn't rely on a move?
-            // But safe to just ignore corrupted/illegal entries.
-
             let is_valid_entry = tt_move.is_some() || (flag == TTFlag::Alpha);
 
             if is_valid_entry {
@@ -625,14 +647,14 @@ fn negamax(
     }
     
     // Null Move Pruning
-    // Zugzwang prevention: Only do NMP if we have non-pawn pieces
     let us = board.side_to_move();
     let non_pawns = *board.color_combined(us) & !*board.pieces(chess::Piece::Pawn) & !*board.pieces(chess::Piece::King);
     let zugzwang_risk = non_pawns.0 == 0;
 
     if null_ok && !in_check && !is_endgame && !zugzwang_risk && depth >= 3 {
+        // Dynamic R based on static_eval to be safer? No, standard 3 is fine for depth > 6.
+        let r = if depth > 6 { 3 } else { 2 };
         if let Some(null_board) = board.null_move() {
-            let r = 2; // Fixed reduction for stability
             let (score, _) = negamax(&null_board, eval_state, None, depth.saturating_sub(1 + r), -beta, -beta + 1, ply + 1, false, time_manager);
             let score = -score;
             if STOP_SEARCH.load(Ordering::Relaxed) { return (0, None); }
@@ -647,13 +669,11 @@ fn negamax(
         let probcut_beta = beta + 200;
         let probcut_depth = depth - 4;
 
-        // Search captures with reduced depth/window
         let mut gen = MoveGen::new_legal(board);
         let targets = board.color_combined(!board.side_to_move());
         gen.set_iterator_mask(*targets);
 
         for mv in gen {
-            // Only search if SEE >= 0 (simple check to avoid bad captures)
             if eval::see(board, mv) < 0 { continue; }
 
             let mut new_eval = eval_state;
@@ -695,14 +715,10 @@ fn negamax(
                     let se_beta = (entry.score as i32).saturating_sub(2 * depth as i32);
                     let se_depth = (depth - 1) / 2;
 
-                    // Search other moves at reduced depth to verify singularity
-                    // Optimization: Only check first few moves and use StagedMoveGen
                     let mut is_singular = true;
                     let mut moves_checked = 0;
-                    let max_checks = 6; // Limit checks to avoid overhead
+                    let max_checks = 6; 
 
-                    // We don't have a staged gen for *other* moves easily without excluding TT move inside
-                    // But we can use StagedMoveGen and skip the TT move.
                     let mut se_gen = StagedMoveGen::new(board, None, ply);
 
                     while let Some(other_mv) = se_gen.next() {
@@ -710,7 +726,7 @@ fn negamax(
 
                         moves_checked += 1;
                         if moves_checked > max_checks {
-                            is_singular = false; // Assume not singular if we have many alternatives
+                            is_singular = false; 
                             break;
                         }
 
@@ -762,7 +778,7 @@ fn negamax(
         let gives_check = *new_board.checkers() != chess::EMPTY;
         
         let mut reduction = 0u8;
-        if i >= 2 && depth >= 2 && !is_capture && !gives_check && !in_check {
+        if i >= 2 && depth >= 3 && !is_capture && !gives_check && !in_check {
              // Check if it is a killer move
              let ply_idx = (ply as usize).min(63);
              let is_killer = KILLERS.with(|k| {
@@ -771,7 +787,9 @@ fn negamax(
              });
 
              if !is_killer {
-                 reduction = 1; // Fixed reduction
+                 // Logarithmic Reduction
+                 let r = 1.0 + (depth as f32).ln() * (i as f32).ln() / 2.6;
+                 reduction = r as u8;
              }
         }
         

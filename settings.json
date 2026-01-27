@@ -1,6 +1,6 @@
 {
   "ponder_enabled": true,
-  "engine_depth": 12,
+  "engine_depth": 10,
   "engine_contempt": 50,
   "engine_skill": 20,
   "show_best_move_arrow": true
