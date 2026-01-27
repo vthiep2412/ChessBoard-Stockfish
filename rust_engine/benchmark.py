@@ -237,7 +237,7 @@ def run_nps_test(depth: int = 12, clear_tt: bool = False) -> None:
             # Add slight spacing for readability
             # print("")
     finally:
-        sf_helper.stop()
+        pass
     
     print("-" * 75)
         
@@ -430,11 +430,11 @@ def main():
     if args.syzygy:
         print(colorize(f"  → Initializing Syzygy tablebases at: {args.syzygy}", Colors.CYAN))
         try:
-             rust_engine.set_tablebase_path(args.syzygy)
+            rust_engine.set_tablebase_path(args.syzygy)
         except AttributeError:
-             print(colorize("WARNING: rust_engine.set_tablebase_path not found (update bindings?)", Colors.YELLOW))
+            print(colorize("WARNING: rust_engine.set_tablebase_path not found (update bindings?)", Colors.YELLOW))
         except Exception as e:
-             print(colorize(f"WARNING: Failed to init Syzygy: {e}", Colors.YELLOW))
+            print(colorize(f"WARNING: Failed to init Syzygy: {e}", Colors.YELLOW))
 
     print(f"  Running benchmark at depth {args.depth}...")
     if args.clear_tt:

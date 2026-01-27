@@ -151,10 +151,3 @@ fn rust_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stop_search, m)?)?;
     Ok(())
 }
-
-/// Stop search helper for Python (optional, but good for completeness)
-#[pyfunction]
-fn stop_search() -> PyResult<()> {
-    search::stop();
-    Ok(())
-}

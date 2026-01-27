@@ -48,7 +48,8 @@ impl MoveList {
     pub fn as_slice_mut(&mut self) -> &mut [ScoredMove] {
         // Safety: We only access up to self.count, which have been initialized
         unsafe {
-            std::mem::transmute(&mut self.moves[..self.count])
+            let slice = &mut self.moves[..self.count];
+            &mut *(slice as *mut [MaybeUninit<ScoredMove>] as *mut [ScoredMove])
         }
     }
 

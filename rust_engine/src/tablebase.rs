@@ -1,7 +1,7 @@
 use std::path::Path;
 use shakmaty_syzygy::{Tablebase, AmbiguousWdl}; 
 use shakmaty::{Chess, Position, CastlingMode, Move};
-use chess::{Board, ChessMove, File, Rank, Square};
+use chess::{Board, ChessMove, Square};
 use std::sync::OnceLock;
 use std::str::FromStr;
 
@@ -11,46 +11,40 @@ use std::str::FromStr;
 static TABLEBASE: OnceLock<Tablebase<Chess>> = OnceLock::new();
 
 /// Initialize the tablebase with a path
-pub fn init(path: &str) {
+pub fn init(path: &str) -> Result<(), String> {
     let p = Path::new(path);
     if !p.exists() {
-        eprintln!("info string Syzygy path does not exist: {}", path);
-        return;
+        return Err(format!("Syzygy path does not exist: {}", path));
     }
 
     let mut tb = Tablebase::new();
     match tb.add_directory(p) {
         Ok(_) => {
-            TABLEBASE.set(tb).ok(); // Ignore if already set
+            TABLEBASE.set(tb).map_err(|_| "Tablebase already initialized".to_string())?;
             println!("info string Syzygy tablebases found at: {}", path);
+            Ok(())
         },
-        Err(e) => {
-            eprintln!("info string Failed to load Syzygy: {}", e);
-        }
+        Err(e) => Err(format!("Failed to load Syzygy: {}", e))
     }
 }
 
 /// Convert chess::Board to shakmaty::Chess
-fn convert_board(board: &Board) -> Chess {
+fn convert_board(board: &Board) -> Option<Chess> {
     let fen = format!("{}", board);
     use shakmaty::fen::Fen;
     
-    let setup: Fen = Fen::from_str(&fen).expect("Valid FEN from internal board");
-    setup.into_position(CastlingMode::Standard).expect("Valid position")
+    let setup: Fen = Fen::from_str(&fen).ok()?;
+    setup.into_position(CastlingMode::Standard).ok()
 }
 
 /// Convert shakmaty::Move to chess::ChessMove
-fn convert_move(m: &Move, _pos: &Chess) -> ChessMove {
-    // Manual UCI conversion to avoid import issues and ensure format
-    // shakmaty::Move has from(), to(), promotion()
-    // We assume standard chess moves (not NullMove in legals usually, or handle it)
-    
-    let from = m.from().expect("Move should have source square");
+fn convert_move(m: &Move, _pos: &Chess) -> Option<ChessMove> {
+    let from = m.from()?;
     let to = m.to();
-    let prom = m.promotion(); // Returns Option<Role>
+    let prom = m.promotion(); 
     
-    let from_sq = Square::from_str(&from.to_string()).unwrap();
-    let to_sq = Square::from_str(&to.to_string()).unwrap();
+    let from_sq = Square::from_str(&from.to_string()).ok()?;
+    let to_sq = Square::from_str(&to.to_string()).ok()?;
     
     let prom_piece = match prom {
         Some(role) => match role {
@@ -63,13 +57,13 @@ fn convert_move(m: &Move, _pos: &Chess) -> ChessMove {
         None => None,
     };
     
-    ChessMove::new(from_sq, to_sq, prom_piece)
+    Some(ChessMove::new(from_sq, to_sq, prom_piece))
 }
 
 /// Probe for WDL (Win/Draw/Loss) score
 pub fn probe_wdl(board: &Board) -> Option<i32> {
     if let Some(tb) = TABLEBASE.get() {
-        let pos = convert_board(board);
+        let pos = convert_board(board)?;
         if pos.board().occupied().count() > 7 { 
             return None;
         }
@@ -96,7 +90,7 @@ pub fn probe_wdl(board: &Board) -> Option<i32> {
 /// Returns (BestMove, Score)
 pub fn probe_root(board: &Board) -> Option<(ChessMove, i32)> {
     let tb = TABLEBASE.get()?;
-    let pos = convert_board(board);
+    let pos = convert_board(board)?;
     if pos.board().occupied().count() > 7 {
         return None;
     }
@@ -125,7 +119,9 @@ pub fn probe_root(board: &Board) -> Option<(ChessMove, i32)> {
                  // Pass `pos` for correct UCI conversion context if needed?
                  // Wait, `convert_move` needs the *source* position (the one BEFORE the move).
                  // So we pass `&pos`.
-                 best_move = Some(convert_move(&m, &pos));
+                 if let Some(cm) = convert_move(&m, &pos) {
+                     best_move = Some(cm);
+                 }
              }
          }
     }

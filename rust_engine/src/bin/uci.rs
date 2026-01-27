@@ -28,7 +28,7 @@ fn main() {
             "setoption" => {
                 if commands.len() >= 5 && commands[1] == "name" && commands[3] == "value" {
                     let name = commands[2];
-                    let value = commands[4];
+                    let value = commands[4..].join(" ");
                     match name.to_lowercase().as_str() {
                         "hash" => {
                             if let Ok(_v) = value.parse::<usize>() {
@@ -41,7 +41,9 @@ fn main() {
                             }
                         },
                         "syzygypath" => {
-                             rust_engine::tablebase::init(&value);
+                             if let Err(e) = rust_engine::tablebase::init(&value) {
+                                 println!("info string {}", e);
+                             }
                         },
                         _ => {
                             println!("info string Option {} not supported", name);
