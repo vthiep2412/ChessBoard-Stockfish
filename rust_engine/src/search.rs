@@ -1,7 +1,6 @@
 //! Alpha-Beta Search with Transposition Table, Iterative Deepening, and Parallel Search
 
 use chess::{Board, MoveGen, ChessMove};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use crate::eval;
 use crate::movegen::{StagedMoveGen};
@@ -184,9 +183,10 @@ fn tt_store(hash: u64, depth: u8, score: i32, flag: TTFlag, best_move: Option<Ch
     let old_hash = entry.hash.load(Ordering::Relaxed);
 
     // Replacement strategy: Always replace if new search is deeper,
-    // or if it's the same position (update score/flag),
     // or if the slot is empty.
-    if depth >= old_depth || old_hash == hash || old_hash == 0 {
+    // We do NOT blindly replace same-hash unless it is deeper.
+    // This prevents deeper entries from being overwritten by shallower searches (CodeRabbit fix).
+    if depth >= old_depth || old_hash == 0 {
         let mv_encoded = best_move.map(encode_move).unwrap_or(0) as u64;
         let score_encoded = (score.clamp(-30000, 30000) as i16 as u16) as u64;
         let depth_encoded = depth as u64;
@@ -704,7 +704,7 @@ fn iterative_deepening_worker(
     max_depth: u8,
     aggressiveness: u8,
     time_manager: Option<TimeManager>,
-    _is_main_thread: bool
+    is_main_thread: bool
 ) -> (Option<ChessMove>, i32) {
     AGGRESSIVENESS.with(|a| a.set(aggressiveness));
     
@@ -715,8 +715,14 @@ fn iterative_deepening_worker(
     let root_eval = eval::EvalState::new(board);
     
     for depth in 1..=max_depth {
+        // Sourcery Fix: Helper threads must check stop flag at top of loop
+        if STOP_SEARCH.load(Ordering::Relaxed) {
+            break;
+        }
+
         if let Some(tm) = time_manager {
-            if depth > 4 && tm.start_time.elapsed().as_millis() > tm.allocated_time / 2 {
+            // Sourcery Fix: Only main thread should apply heuristic early cutoff
+            if is_main_thread && depth > 4 && tm.start_time.elapsed().as_millis() > tm.allocated_time / 2 {
                 break;
             }
         }
@@ -793,6 +799,9 @@ pub fn lazy_smp_search(
     movestogo: Option<u64>,
     num_threads: usize
 ) -> (Option<ChessMove>, i32) {
+    // Sourcery Fix: Clamp thread count to guard against misuse
+    let num_threads = num_threads.clamp(1, 64);
+
     if num_threads <= 1 {
         return iterative_deepening(board, max_depth, aggressiveness, wtime, btime, movestogo);
     }

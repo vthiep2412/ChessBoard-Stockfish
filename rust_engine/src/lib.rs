@@ -52,7 +52,8 @@ fn get_best_move(
         // Use parallel search for higher depths - detect cores automatically
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
-            .unwrap_or(4);
+            .unwrap_or(4)
+            .min(64); // Cap at 64 threads to match UCI limit
 
         search::lazy_smp_search(&board, depth, aggr, wtime, btime, movestogo, threads)
     } else {
