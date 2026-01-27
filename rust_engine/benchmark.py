@@ -9,6 +9,7 @@ import os
 import subprocess
 import re
 import datetime
+import argparse
 
 # Add the target directory to path for the compiled module
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'target', 'release'))
@@ -96,7 +97,7 @@ TEST_POSITIONS = [
     ("king_exposed", "r1bq1rk1/pppp1ppp/5n2/2b5/2B1P3/5Q2/PPPP1PPP/RNB1K2R w KQ - 6 6"),
     
     # Endgame - knight vs pawns
-    ("knight_endgame", "8/8/4k3/2N5/2p5/2P2K2/8/8 w - - 0 1"),
+    ("knight_endgame", "8/4k3/8/2N5/2p5/2P2K2/8/8 w - - 0 1"),
 ]
 
 # ============================================
@@ -247,10 +248,12 @@ class StockfishHelper:
         return moves[:num_moves]
 
 
-def run_nps_test(depth: int = 12) -> None:
+def run_nps_test(depth: int = 12, clear_tt: bool = False) -> None:
     """Run NPS benchmark on all test positions with Stockfish validation"""
     print("\n" + colorize("="*60, Colors.BLUE))
     print(colorize(f"  NPS Benchmark (depth {depth}) + Move Quality Check", Colors.BOLD))
+    if clear_tt:
+        print(colorize("  (TT cleared between positions)", Colors.YELLOW))
     print(colorize("="*60, Colors.BLUE))
     print(f"{'Position':<20} {'Time':<10} {'Nodes':<10} {'NPS':<10} {'Move':<8} {'Quality':<10}")
     print("-" * 75)
@@ -266,6 +269,8 @@ def run_nps_test(depth: int = 12) -> None:
     sf_helper.start()
     try:
         for name, fen in TEST_POSITIONS:
+            if clear_tt:
+                rust_engine.clear_tt()
             result = benchmark_position(name, fen, depth)
             results.append(result)
             
@@ -492,18 +497,17 @@ def main():
     print(colorize("="*60, Colors.BLUE))
     
     # Parse arguments
-    depth = 10
-    if len(sys.argv) > 1:
-        try:
-            depth = int(sys.argv[1])
-        except ValueError:
-            pass
+    parser = argparse.ArgumentParser(description="Rust Chess Engine Benchmark Suite")
+    parser.add_argument("depth", type=int, nargs="?", default=10, help="Search depth (default: 10)")
+    parser.add_argument("--clear-tt", action="store_true", help="Clear Transposition Table before each position")
+    
+    args = parser.parse_args()
     
     # Run tests
     run_correctness_test()
-    run_nps_test(depth)
+    run_nps_test(args.depth, args.clear_tt)
     run_depth_scaling_test()
-    run_parallel_vs_serial_test(depth)
+    run_parallel_vs_serial_test(args.depth)
     
     print("\n" + colorize("="*60, Colors.BLUE))
     print(colorize("  Benchmark Complete!", Colors.BOLD + Colors.GREEN))
