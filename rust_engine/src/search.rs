@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use rayon::prelude::*;
 use crate::eval;
 use crate::movegen::{StagedMoveGen, Stage};
+use crate::tablebase;
 use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 
 // =============================================================================
@@ -847,6 +848,14 @@ pub fn iterative_deepening(
 ) -> (Option<ChessMove>, i32) {
     AGGRESSIVENESS.with(|a| a.set(aggressiveness));
     
+    // Check Tablebase first!
+    if let Some((tb_move, score)) = tablebase::probe_root(board) {
+        if is_debug() {
+             eprintln!("[DEBUG] Syzygy hit: {} score {}", tb_move, score);
+        }
+        return (Some(tb_move), score);
+    }
+    
     reset_node_counts();
     KILLERS.with(|k| *k.borrow_mut() = [[None; 2]; 64]);
     HISTORY.with(|h| {
@@ -928,6 +937,12 @@ pub fn parallel_root_search(
     movestogo: Option<u64>
 ) -> (Option<ChessMove>, i32) {
     AGGRESSIVENESS.with(|a| a.set(aggressiveness));
+    
+    // Check Tablebase
+    if let Some((tb_move, score)) = tablebase::probe_root(board) {
+         return (Some(tb_move), score);
+    }
+
     KILLERS.with(|k| *k.borrow_mut() = [[None; 2]; 64]);
     reset_node_counts();
     

@@ -1,9 +1,8 @@
 use std::io::{self, BufRead};
-use rust_engine::{search, eval};
-use chess::{Board, ChessMove, Color};
+use rust_engine::search;
+use chess::Board;
 use std::str::FromStr;
 use std::thread::{self, JoinHandle};
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
 fn main() {
     let stdin = io::stdin();
@@ -23,30 +22,33 @@ fn main() {
                 println!("id author Hiep & Jules");
                 println!("option name Hash type spin default 64 min 1 max 1024");
                 println!("option name Threads type spin default 1 min 1 max 64");
+                println!("option name SyzygyPath type string default <empty>");
                 println!("uciok");
             },
             "setoption" => {
-                // setoption name Hash value 128
-                // Basic parsing
                 if commands.len() >= 5 && commands[1] == "name" && commands[3] == "value" {
                     let name = commands[2];
                     let value = commands[4];
                     match name.to_lowercase().as_str() {
                         "hash" => {
-                            // Logic to resize TT would go here
-                            // For now we acknowledge it
                             if let Ok(_v) = value.parse::<usize>() {
-                                // TODO: Resize TT
+                                // TODO: Resize Transposition Table
                             }
                         },
                         "threads" => {
-                            // Logic to set thread pool size
                             if let Ok(_v) = value.parse::<usize>() {
-                                // TODO: Set threads
+                                // TODO: Set thread pool size
                             }
                         },
-                        _ => {}
+                        "syzygypath" => {
+                             rust_engine::tablebase::init(&value);
+                        },
+                        _ => {
+                            println!("info string Option {} not supported", name);
+                        }
                     }
+                } else {
+                     println!("info string Invalid setoption command format");
                 }
             },
             "isready" => println!("readyok"),

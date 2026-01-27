@@ -138,7 +138,7 @@ impl<'a> StagedMoveGen<'a> {
 
     // Pick best move from list starting at self.idx
     
-  (&mut self, list_type: Stage) -> Option<ChessMove> {
+    fn pick_best(&mut self, list_type: Stage) -> Option<ChessMove> {
         let list = match list_type {
             Stage::CapturesWinning => self.captures.as_slice_mut(),
             Stage::Quiets => self.quiets.as_slice_mut(),

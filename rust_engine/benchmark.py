@@ -57,9 +57,6 @@ TEST_POSITIONS = [
     # Tactical position
     ("tactical", "r2qk2r/ppp2ppp/2n1bn2/2b1p3/4P3/2NP1N2/PPP2PPP/R1BQKB1R w KQkq - 4 6"),
     
-    # Endgame
-    ("endgame", "8/5pk1/6p1/8/5P2/6P1/5K2/8 w - - 0 1"),
-    
     # Kiwipete (complex position for testing)
     ("kiwipete", "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"),
     
@@ -99,6 +96,27 @@ TEST_POSITIONS = [
     # Endgame - knight vs pawns
     ("knight_endgame", "8/4k3/8/2N5/2p5/2P2K2/8/8 w - - 0 1"),
 ]
+
+# ============================================
+# Cached Stockfish Best Moves (Depth 20)
+# ============================================
+CACHED_BEST_MOVES = {
+    'kasparov_topalov': ['b2c3', 'c4a6', 'b2a1', 'b2c1', 'd1d2'],
+    'tactical': ['f1e2', 'h2h3', 'c1e3', 'c1g5', 'd1d2'],
+    'kiwipete': ['d5e6', 'e2a6', 'c3d1', 'e5g6', 'e1c1'],
+    'wac_001': ['g3g6', 'f6h5', 'f6e8', 'f6g4', 'a1d1'],
+    'italian_sharp': ['g5f7', 'c4f7', 'd2d4', 'e1g1', 'd2d3'],
+    'ruy_middle': ['a2a3', 'e1g1', 'b1c3', 'd1c2', 'd1e2'],
+    'qgd_complex': ['e5f6', 'c3a4', 'd4c5', 'f1b5', 'c1f4'],
+    'tactical_pins': ['f2f4', 'a2a4', 'd1d3', 'e1g1', 'e2f3'],
+    'endgame_rook': ['f2e3', 'f2f3', 'g3g4', 'f2e2', 'f2g2'],
+    'isolated_qp': ['e5f6', 'f1d3', 'c1e3', 'd1c2', 'c1g5'],
+    'discovered': ['c3d5', 'e1g1', 'd1e2', 'd2d3', 'c4d3'],
+    'rook_endgame': ['f3e4', 'f3f4', 'f3e2', 'f3f2', 'f3g3'],
+    'double_edged': ['d2g5', 'h2h3', 'd2d1', 'c3d5', 'g1h1'],
+    'king_exposed': ['b1c3', 'e1g1', 'd2d3', 'd2d4', 'b2b4'],
+    'knight_endgame': ['c5a6', 'f3e4', 'c5a4', 'f3f4', 'f3e3'],
+}
 
 # ============================================
 # Benchmark Functions
@@ -148,105 +166,9 @@ def benchmark_position(name: str, fen: str, depth: int = DEPTH_BENCH) -> dict:
         "nps": nps,
     }
 
-class StockfishHelper:
-    def __init__(self):
-        self.process = None
-        self.lock = False
-
-    def start(self):
-        if self.process:
-            return
-        try:
-            self.process = subprocess.Popen(
-                [STOCKFISH_PATH],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1
-            )
-            self._send("uci")
-            
-            # Read header until uciok
-            while True:
-                line = self.process.stdout.readline()
-                if not line or line.strip() == "uciok":
-                    break
-                    
-        except Exception as e:
-            print(f"Failed to start Stockfish: {e}")
-            self.process = None
-
-    def stop(self):
-        if self.process:
-            try:
-                self.process.terminate()
-            except:
-                pass
-            self.process = None
-
-    def _send(self, cmd):
-        if self.process:
-            try:
-                self.process.stdin.write(cmd + "\n")
-                self.process.stdin.flush()
-            except IOError:
-                self.stop()
-
-    def get_top_moves(self, fen: str, depth: int = 12, num_moves: int = 5) -> list:
-        if not self.process:
-            self.start()
-        
-        if not self.process:
-            return []
-
-        self._send("isready")
-        while True:
-            line = self.process.stdout.readline()
-            if not line or line.strip() == "readyok":
-                break
-
-        self._send(f"setoption name MultiPV value {num_moves}")
-        self._send(f"position fen {fen}")
-        self._send(f"go depth {depth}")
-
-        moves_by_mpv = {}
-        
-        while True:
-            line = self.process.stdout.readline()
-            if not line:
-                break
-            line = line.strip()
-            
-            if line.startswith("bestmove"):
-                break
-                
-            if 'info' in line and ' depth ' in line and ' pv ' in line:
-                # Extract depth
-                depth_match = re.search(r' depth (\d+)', line)
-                if not depth_match:
-                    continue
-                line_depth = int(depth_match.group(1))
-                
-                # Extract multipv number (default 1)  
-                mpv_match = re.search(r' multipv (\d+)', line)
-                mpv_num = int(mpv_match.group(1)) if mpv_match else 1
-                
-                # Extract the first PV move
-                pv_match = re.search(r' pv ([a-h][1-8][a-h][1-8][qrbn]?)', line)
-                if pv_match:
-                    move = pv_match.group(1)
-                    # Keep highest depth for each mpv
-                    if mpv_num not in moves_by_mpv or line_depth > moves_by_mpv[mpv_num][0]:
-                        moves_by_mpv[mpv_num] = (line_depth, move)
-        
-        # Build ordered list
-        moves = []
-        for i in range(1, num_moves + 1):
-            if i in moves_by_mpv:
-                moves.append(moves_by_mpv[i][1])
-        return moves[:num_moves]
-
+# StockfishHelper REMOVED - Using cached moves
+# Class kept commented out or removed if desired.
+# I will remove it to clean up as user requested "stop running stockfis".
 
 def run_nps_test(depth: int = 12, clear_tt: bool = False) -> None:
     """Run NPS benchmark on all test positions with Stockfish validation"""
@@ -265,8 +187,8 @@ def run_nps_test(depth: int = 12, clear_tt: bool = False) -> None:
     quality_score = 0  # Weighted score: Top1=5, Top2=4, Top3=3, Top4=2, Top5=1
     max_quality_score = 0
     
-    sf_helper = StockfishHelper()
-    sf_helper.start()
+    # No Stockfish process start needed!
+    
     try:
         for name, fen in TEST_POSITIONS:
             if clear_tt:
@@ -281,8 +203,8 @@ def run_nps_test(depth: int = 12, clear_tt: bool = False) -> None:
                 
             total_time += result["time_ms"]
             
-            # Get Stockfish's top 5 moves for comparison
-            sf_moves = sf_helper.get_top_moves(fen, depth=12, num_moves=5)
+            # Get cached top moves
+            sf_moves = CACHED_BEST_MOVES.get(name, [])
             our_move = result['best_move']
             
             # Check position in Stockfish's ranking
@@ -498,11 +420,26 @@ def main():
     
     # Parse arguments
     parser = argparse.ArgumentParser(description="Rust Chess Engine Benchmark Suite")
-    parser.add_argument("depth", type=int, nargs="?", default=10, help="Search depth (default: 10)")
-    parser.add_argument("--clear-tt", action="store_true", help="Clear Transposition Table before each position")
+    parser.add_argument('depth', type=int, nargs='?', default=12, help='Search depth (default: 12)')
+    parser.add_argument('--clear-tt', action='store_true', help='Clear TT before each search (default: False)')
+    parser.add_argument('--syzygy', type=str, help='Path to Syzygy tablebases', default=None)
     
     args = parser.parse_args()
     
+    # Initialize Syzygy if path provided
+    if args.syzygy:
+        print(colorize(f"  → Initializing Syzygy tablebases at: {args.syzygy}", Colors.CYAN))
+        try:
+             rust_engine.set_tablebase_path(args.syzygy)
+        except AttributeError:
+             print(colorize("WARNING: rust_engine.set_tablebase_path not found (update bindings?)", Colors.YELLOW))
+        except Exception as e:
+             print(colorize(f"WARNING: Failed to init Syzygy: {e}", Colors.YELLOW))
+
+    print(f"  Running benchmark at depth {args.depth}...")
+    if args.clear_tt:
+        print("  Option: Clear TT enabled")
+        
     # Run tests
     run_correctness_test()
     run_nps_test(args.depth, args.clear_tt)

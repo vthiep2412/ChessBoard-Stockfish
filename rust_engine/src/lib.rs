@@ -2,6 +2,8 @@ pub mod search;
 pub mod eval;
 mod book;
 pub mod movegen;
+pub mod tablebase;
+
 
 use chess::{Board, MoveGen};
 use std::str::FromStr;
@@ -121,6 +123,20 @@ fn set_debug(enabled: bool) -> PyResult<()> {
     Ok(())
 }
 
+/// Set the Syzygy tablebase path
+#[pyfunction]
+fn set_tablebase_path(path: &str) -> PyResult<()> {
+    tablebase::init(path);
+    Ok(())
+}
+
+/// Stop search helper for Python (optional, but good for completeness)
+#[pyfunction]
+fn stop_search() -> PyResult<()> {
+    search::stop();
+    Ok(())
+}
+
 /// Python module
 #[pymodule]
 fn rust_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -131,6 +147,7 @@ fn rust_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_node_counts, m)?)?;
     m.add_function(wrap_pyfunction!(clear_tt, m)?)?;
     m.add_function(wrap_pyfunction!(set_debug, m)?)?;
+    m.add_function(wrap_pyfunction!(set_tablebase_path, m)?)?;
     m.add_function(wrap_pyfunction!(stop_search, m)?)?;
     Ok(())
 }

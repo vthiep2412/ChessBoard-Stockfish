@@ -390,6 +390,7 @@ fn eval_king_safety(board: &Board, color: Color) -> i32 {
     let them = board.color_combined(!color);
     let occ = *us | *them;
     let king_sq = board.king_square(color);
+    let mut score = 0;
 
     // King Zone: Squares around king + 2 squares in front
     let king_moves = chess::get_king_moves(king_sq);
