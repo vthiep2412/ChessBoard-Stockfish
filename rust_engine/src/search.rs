@@ -1,10 +1,10 @@
 //! Alpha-Beta Search with Transposition Table, Iterative Deepening, and Parallel Search
 
-use chess::{Board, MoveGen, ChessMove, BoardStatus, BitBoard};
+use chess::{Board, MoveGen, ChessMove};
 use std::sync::{Arc, Mutex};
-use rayon::prelude::*;
+use std::thread;
 use crate::eval;
-use crate::movegen::{StagedMoveGen, Stage};
+use crate::movegen::{StagedMoveGen};
 use crate::tablebase;
 use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 
@@ -17,12 +17,6 @@ const TT_SIZE: usize = 1 << 22;
 const TT_MASK: usize = TT_SIZE - 1;
 
 /// Atomic TT entry - 16 bytes total (2 x u64)
-/// Layout of `data`:
-/// 0-15: best_move (u16)
-/// 16-31: score (i16 as u16)
-/// 32-39: depth (u8)
-/// 40-47: flag (u8)
-/// 48-63: unused/padding
 #[repr(C)]
 pub struct TTEntry {
     hash: AtomicU64,
@@ -84,23 +78,19 @@ pub fn encode_move(mv: ChessMove) -> u16 {
 }
 
 /// Decode a u16 into ChessMove (requires board to validate)
-/// SAFE: Validates indices to prevent UB with corrupted TT data
 #[inline(always)]
 pub fn decode_move(encoded: u16, _board: &Board) -> Option<ChessMove> {
     if encoded == 0 {
         return None;
     }
     
-    // Extract and VALIDATE indices to prevent UB with corrupted TT data
     let from_idx = (encoded & 0x3F) as u8;
     let to_idx = ((encoded >> 6) & 0x3F) as u8;
     
-    // Bounds check: square indices must be 0-63
     if from_idx >= 64 || to_idx >= 64 {
-        return None; // Corrupted TT entry, skip this move
+        return None;
     }
     
-    // SAFETY: We just validated indices are in range 0-63
     let from = unsafe { chess::Square::new(from_idx) };
     let to = unsafe { chess::Square::new(to_idx) };
     
@@ -116,26 +106,21 @@ pub fn decode_move(encoded: u16, _board: &Board) -> Option<ChessMove> {
 
 // =============================================================================
 // LOCK-FREE GLOBAL TRANSPOSITION TABLE
-// Uses raw pointer access for zero-overhead reads/writes
 // =============================================================================
 
 use std::cell::UnsafeCell;
 use std::sync::Once;
 
-/// Global TT storage - initialized once on first use
 struct GlobalTT {
     data: UnsafeCell<Vec<TTEntry>>,
 }
 
-// SAFETY: We accept racy reads/writes - this is standard in chess engines
-// Entries are small (16 bytes) and atomic-ish on 64-bit systems
 unsafe impl Sync for GlobalTT {}
 unsafe impl Send for GlobalTT {}
 
 static mut GLOBAL_TT: Option<GlobalTT> = None;
 static INIT: Once = Once::new();
 
-/// Get pointer to global TT (lazy initialization)
 #[inline(always)]
 fn get_tt() -> *mut TTEntry {
     unsafe {
@@ -150,14 +135,13 @@ fn get_tt() -> *mut TTEntry {
     }
 }
 
-/// Probe the transposition table - LOCKLESS & ATOMIC
+/// Probe the transposition table - LOCKLESS & SAFE
 #[inline(always)]
 pub fn tt_probe(hash: u64) -> Option<(TTEntryData, TTFlag)> {
     let idx = (hash as usize) & TT_MASK;
-    // SAFETY: idx is always < TT_SIZE due to mask, TT is initialized
     let entry = unsafe { &*get_tt().add(idx) };
 
-    // Read Key -> Data -> Key (Seqlock-style consistency check)
+    // Read Key -> Data -> Key
     let key = entry.hash.load(Ordering::Acquire);
     if key != hash {
         return None;
@@ -165,13 +149,11 @@ pub fn tt_probe(hash: u64) -> Option<(TTEntryData, TTFlag)> {
 
     let data = entry.data.load(Ordering::Acquire);
 
-    // Double-check key to ensure data belongs to this key
     let key2 = entry.hash.load(Ordering::Acquire);
     if key2 != key {
         return None;
     }
 
-    // Unpack
     let best_move = (data & 0xFFFF) as u16;
     let score = ((data >> 16) & 0xFFFF) as i16;
     let depth_entry = ((data >> 32) & 0xFF) as u8;
@@ -191,25 +173,19 @@ pub fn tt_probe(hash: u64) -> Option<(TTEntryData, TTFlag)> {
     }
 }
 
-/// Store an entry in the transposition table - LOCKLESS & ATOMIC
+/// Store an entry in the transposition table - LOCKLESS & SAFE
 #[inline(always)]
 fn tt_store(hash: u64, depth: u8, score: i32, flag: TTFlag, best_move: Option<ChessMove>) {
     let idx = (hash as usize) & TT_MASK;
-    // SAFETY: idx is always < TT_SIZE due to mask, TT is initialized
     let entry = unsafe { &*get_tt().add(idx) };
 
-    // Read existing depth to decide replacement strategy
-    // We can read data loosely here
     let old_data = entry.data.load(Ordering::Relaxed);
     let old_depth = ((old_data >> 32) & 0xFF) as u8;
     let old_hash = entry.hash.load(Ordering::Relaxed);
 
-    // Replace if:
-    // 1. New search is deeper
-    // 2. Same position (hash matches) - we update with better info? Or just overwrite?
-    // 3. Old entry is empty/invalid (hash=0 or flag=0)
-    // 4. Aging (not implemented yet, but deeper is usually enough)
-
+    // Replacement strategy: Always replace if new search is deeper,
+    // or if it's the same position (update score/flag),
+    // or if the slot is empty.
     if depth >= old_depth || old_hash == hash || old_hash == 0 {
         let mv_encoded = best_move.map(encode_move).unwrap_or(0) as u64;
         let score_encoded = (score.clamp(-30000, 30000) as i16 as u16) as u64;
@@ -221,77 +197,32 @@ fn tt_store(hash: u64, depth: u8, score: i32, flag: TTFlag, best_move: Option<Ch
                      | (depth_encoded << 32)
                      | (flag_encoded << 40);
 
-        // Store: Update data first, then hash (Key) to ensure consistency for readers
-        // Actually, for Seqlock reader (Key -> Data -> Key), we should:
-        // 1. Invalidate Key? (Optional, but helps reader fail fast)
-        // 2. Write Data
-        // 3. Write Key
-
-        // If we don't invalidate, Reader might see Old Key, New Data, Old Key.
-        // If Old Key == New Key (Same Pos), New Data is valid.
-        // If Old Key != New Key (Collision/Overwrite), Reader sees Old Key... wait.
-
-        // Correct order for "Key1 -> Data -> Key2" check:
-        // Writer:
-        // entry.data.store(..., Release);
-        // entry.hash.store(..., Release);
-
-        // Reader:
-        // k1 = hash.load(Acquire)
-        // d = data.load(Acquire)
-        // k2 = hash.load(Acquire)
-        // if k1 == k2 == target_hash -> Valid.
-
-        // Scenario: Writer updates.
-        // W: Data = New
-        // W: Hash = New
-
-        // R: Reads Hash (Old). Matches Target?
-        //    If Target == Old (we are looking up old pos), and Writer is overwriting it...
-        //    R: Reads Data (New).
-        //    R: Reads Hash (New).
-        //    k1 (Old) != k2 (New). -> Abort. Safe.
-
-        // Scenario: Writer updates SAME position.
-        // W: Data = New (better score)
-        // W: Hash = Same
-
-        // R: Reads Hash (Same). Matches Target.
-        // R: Reads Data (New).
-        // R: Reads Hash (Same).
-        // k1 == k2 == Target. -> Uses New Data. Safe.
-
+        // Safe Write Pattern: Invalidate Key -> Write Data -> Write Key
+        entry.hash.store(0, Ordering::Release);
         entry.data.store(new_data, Ordering::Release);
         entry.hash.store(hash, Ordering::Release);
     }
 }
 
-/// Global debug flag - set to true for verbose logging
 pub static DEBUG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Enable debug mode
 pub fn set_debug(enabled: bool) {
     DEBUG.store(enabled, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Check if debug mode is enabled
 #[inline]
 fn is_debug() -> bool {
     DEBUG.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Clear the transposition table - CRITICAL for fresh searches!
 pub fn tt_clear() {
     unsafe {
         if let Some(tt) = GLOBAL_TT.as_ref() {
-            // Use Relaxed atomic store to clear safely without data races
-            // Iterating 4M entries takes ~15ms, which is acceptable for 'ucinewgame'
             let entries = &*tt.data.get();
             for entry in entries {
                 entry.hash.store(0, Ordering::Relaxed);
                 entry.data.store(0, Ordering::Relaxed);
             }
-
             if is_debug() {
                 eprintln!("[DEBUG] TT cleared - {} entries zeroed", TT_SIZE);
             }
@@ -299,53 +230,44 @@ pub fn tt_clear() {
     }
 }
 
-/// Killer moves table (indexed by depth)
 thread_local! {
     pub static KILLERS: std::cell::RefCell<[[Option<ChessMove>; 2]; 64]> =
         std::cell::RefCell::new([[None; 2]; 64]);
 }
 
-/// History heuristic table [from_sq][to_sq] for move ordering
 thread_local! {
     pub static HISTORY: std::cell::RefCell<[[i32; 64]; 64]> =
         std::cell::RefCell::new([[0; 64]; 64]);
 }
 
-/// Counter-Move History: indexed by PREVIOUS move's [from][to]
-/// Optimized to use Heap allocation (Box) to avoid stack overflow with thread_local
 thread_local! {
     pub static COUNTER_HISTORY: std::cell::RefCell<Box<[[[[i16; 64]; 64]; 64]; 64]>> =
         std::cell::RefCell::new(Box::new([[[[0; 64]; 64]; 64]; 64]));
 }
 
-/// Aggressiveness level (1-10) for pruning - set by iterative_deepening
 thread_local! {
     static AGGRESSIVENESS: std::cell::Cell<u8> = std::cell::Cell::new(5);
 }
 
 const INFINITY: i32 = 30000;
 const MATE_SCORE: i32 = 29000;
-const CONTEMPT: i32 = -15; // Slight draw aversion (engine sees draws as bad)
 
 static NODE_COUNT: AtomicU64 = AtomicU64::new(0);
 static QNODE_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static STOP_SEARCH: AtomicBool = AtomicBool::new(false);
 
-/// Helper to stop search
 pub fn stop() {
     STOP_SEARCH.store(true, Ordering::Relaxed);
 }
 
-/// Helper to clear stop flag (explicitly requested by review)
 pub fn clear_stop_flag() {
     STOP_SEARCH.store(false, Ordering::Relaxed);
 }
 
-/// Time Management
 #[derive(Clone, Copy)]
 pub struct TimeManager {
     pub start_time: std::time::Instant,
-    pub allocated_time: u128, // millis
+    pub allocated_time: u128,
 }
 
 impl TimeManager {
@@ -355,11 +277,7 @@ impl TimeManager {
         if let Some(t) = time_left {
             let moves = movestogo.unwrap_or(30).max(1);
             let mut alloc = t / moves;
-            
-            // Safety buffer (don't use all time)
             alloc = alloc.saturating_sub(50);
-            
-            // Minimum search time
             if alloc < 50 { alloc = 50; }
             
             Some(Self {
@@ -377,22 +295,19 @@ impl TimeManager {
     }
 }
 
-/// Reset node counters (thread-safe)
 pub fn reset_node_counts() {
     NODE_COUNT.store(0, Ordering::Relaxed);
     QNODE_COUNT.store(0, Ordering::Relaxed);
     STOP_SEARCH.store(false, Ordering::Relaxed);
 }
 
-/// Get node counts (thread-safe)
 pub fn get_node_counts() -> (u64, u64) {
     (NODE_COUNT.load(Ordering::Relaxed), QNODE_COUNT.load(Ordering::Relaxed))
 }
 
-/// Update killer moves for a quiet move that caused a beta cutoff
 #[inline(always)]
 fn update_killers(ply: u8, mv: ChessMove) {
-    let ply_idx = (ply as usize).min(63);  // Clamp to valid range
+    let ply_idx = (ply as usize).min(63);
     KILLERS.with(|k| {
         let mut killers = k.borrow_mut();
         if killers[ply_idx][0] != Some(mv) {
@@ -402,7 +317,6 @@ fn update_killers(ply: u8, mv: ChessMove) {
     });
 }
 
-/// Update history heuristic for a quiet move that caused a beta cutoff
 #[inline(always)]
 fn update_history(mv: ChessMove, depth: u8) {
     let from = mv.get_source().to_index();
@@ -416,7 +330,6 @@ fn update_history(mv: ChessMove, depth: u8) {
     });
 }
 
-/// Update counter-move history: what worked after a specific previous move
 #[inline(always)]
 fn update_counter_history(prev_mv: Option<ChessMove>, curr_mv: ChessMove, depth: u8) {
     if let Some(prev) = prev_mv {
@@ -433,41 +346,13 @@ fn update_counter_history(prev_mv: Option<ChessMove>, curr_mv: ChessMove, depth:
     }
 }
 
-/// Get counter-history score for a move based on previous move
-#[inline(always)]
-fn get_counter_history(prev_mv: Option<ChessMove>, curr_mv: ChessMove) -> i32 {
-    if let Some(prev) = prev_mv {
-        let pf = prev.get_source().to_index();
-        let pt = prev.get_dest().to_index();
-        let cf = curr_mv.get_source().to_index();
-        let ct = curr_mv.get_dest().to_index();
-        
-        COUNTER_HISTORY.with(|ch| {
-            ch.borrow()[pf][pt][cf][ct] as i32
-        })
-    } else {
-        0
-    }
-}
-
-/// Get futility margin based on aggressiveness (higher aggr = wider margin = more pruning)
-fn get_futility_margin(depth: u8) -> i32 {
-    let aggr = AGGRESSIVENESS.with(|a| a.get()) as i32;
-    let base = [0, 150, 300, 500][depth.min(3) as usize];
-    base + aggr * 20 // Higher aggr = looser margin = more pruning
-}
-
-/// Quiescence search with delta pruning - only look at captures
 fn quiescence(board: &Board, mut alpha: i32, beta: i32, ply: u8) -> i32 {
-    // Count qnodes (thread-safe)
     QNODE_COUNT.fetch_add(1, Ordering::Relaxed);
     
-    // Depth limit to prevent qsearch explosion in tactical positions
     if ply > 32 {
         return eval::evaluate_lazy(board, alpha, beta);
     }
     
-    // Stand pat - use lazy eval for speedup
     let stand_pat = eval::evaluate_lazy(board, alpha, beta);
     
     if stand_pat >= beta {
@@ -477,7 +362,6 @@ fn quiescence(board: &Board, mut alpha: i32, beta: i32, ply: u8) -> i32 {
         alpha = stand_pat;
     }
     
-    // Delta pruning
     const DELTA: i32 = 1000;
     if stand_pat + DELTA < alpha {
         return alpha;
@@ -485,7 +369,6 @@ fn quiescence(board: &Board, mut alpha: i32, beta: i32, ply: u8) -> i32 {
     
     let mut targets = *board.color_combined(!board.side_to_move());
     if let Some(ep_sq) = board.en_passant() {
-        // En-passant square IS the destination square in chess crate
         targets |= chess::BitBoard::from_square(ep_sq);
     }
 
@@ -493,12 +376,9 @@ fn quiescence(board: &Board, mut alpha: i32, beta: i32, ply: u8) -> i32 {
     gen.set_iterator_mask(targets);
     let mut captures: Vec<ChessMove> = gen.collect();
     
-    // Sort by MVV-LVA
     captures.sort_by_key(|m| -eval::mvv_lva_score(board, *m));
     
     for mv in captures {
-        // REMOVED SEE pruning to fix blindness
-        
         let captured_value = match board.piece_on(mv.get_dest()) {
             Some(chess::Piece::Pawn) => 100,
             Some(chess::Piece::Knight) => 320,
@@ -508,7 +388,6 @@ fn quiescence(board: &Board, mut alpha: i32, beta: i32, ply: u8) -> i32 {
             _ => 0,
         };
         
-        // Increased safety margin from 200 to 900
         if stand_pat + captured_value + 900 < alpha {
             continue;
         }
@@ -527,7 +406,6 @@ fn quiescence(board: &Board, mut alpha: i32, beta: i32, ply: u8) -> i32 {
     alpha
 }
 
-/// Negamax with alpha-beta pruning, NMP, LMR, incremental eval, and continuation history
 fn negamax(
     board: &Board,
     eval_state: eval::EvalState,
@@ -568,28 +446,13 @@ fn negamax(
     let is_endgame = phase < 12;
     
     let tt_result = tt_probe(hash);
-
-    // Decode AND VALIDATE the TT move
-    // If it's a collision or corrupted, board.legal(mv) ensures we don't return garbage.
     let tt_move: Option<ChessMove> = tt_result.as_ref()
         .and_then(|(e, _)| decode_move(e.best_move, board))
-        .filter(|&mv| board.legal(mv)); // <--- CRITICAL FIX: Verify move legality!
+        .filter(|&mv| board.legal(mv));
     
     if let Some((entry, flag)) = tt_result {
         if entry.depth >= depth {
             let score = entry.score as i32;
-
-            // Only cut off if we have a valid move (for Exact/Beta) or if score check passes
-            // Actually, we can return score without move for Beta cutoff if score >= beta?
-            // But if we return (score, tt_move), and tt_move is None (illegal), caller might be confused?
-            // negamax signature is (i32, Option<ChessMove>).
-            // If we return score, we should return the move if we have it.
-
-            // If tt_move was filtered out (illegal), we should NOT use this TT entry for cutoff
-            // because the score might rely on that illegal move being best.
-            // Exception: Alpha cutoff (fail low) doesn't rely on a move?
-            // But safe to just ignore corrupted/illegal entries.
-
             let is_valid_entry = tt_move.is_some() || (flag == TTFlag::Alpha);
 
             if is_valid_entry {
@@ -605,7 +468,6 @@ fn negamax(
     
     let static_eval = if !in_check { eval::evaluate_with_state(board, &eval_state, alpha, beta) } else { 0 };
     
-    // Reverse Futility Pruning
     if !in_check && depth <= 8 {
         let rfp_margin = 100 * depth as i32;
         if static_eval - rfp_margin >= beta {
@@ -613,7 +475,6 @@ fn negamax(
         }
     }
     
-    // Razoring
     if !in_check && depth <= 3 && tt_move.is_none() {
         let razor_margin = 300 + 200 * depth as i32;
         if static_eval + razor_margin < alpha {
@@ -624,15 +485,13 @@ fn negamax(
         }
     }
     
-    // Null Move Pruning
-    // Zugzwang prevention: Only do NMP if we have non-pawn pieces
     let us = board.side_to_move();
     let non_pawns = *board.color_combined(us) & !*board.pieces(chess::Piece::Pawn) & !*board.pieces(chess::Piece::King);
     let zugzwang_risk = non_pawns.0 == 0;
 
     if null_ok && !in_check && !is_endgame && !zugzwang_risk && depth >= 3 {
         if let Some(null_board) = board.null_move() {
-            let r = 2; // Fixed reduction for stability
+            let r = 2;
             let (score, _) = negamax(&null_board, eval_state, None, depth.saturating_sub(1 + r), -beta, -beta + 1, ply + 1, false, time_manager);
             let score = -score;
             if STOP_SEARCH.load(Ordering::Relaxed) { return (0, None); }
@@ -642,18 +501,15 @@ fn negamax(
         }
     }
     
-    // ProbCut
     if !in_check && depth >= 5 && tt_move.is_some() {
         let probcut_beta = beta + 200;
         let probcut_depth = depth - 4;
 
-        // Search captures with reduced depth/window
         let mut gen = MoveGen::new_legal(board);
         let targets = board.color_combined(!board.side_to_move());
         gen.set_iterator_mask(*targets);
 
         for mv in gen {
-            // Only search if SEE >= 0 (simple check to avoid bad captures)
             if eval::see(board, mv) < 0 { continue; }
 
             let mut new_eval = eval_state;
@@ -676,7 +532,6 @@ fn negamax(
     let original_alpha = alpha;
     let mut moves_searched = 0;
     
-    // Internal Iterative Deepening
     let mut tt_move = tt_move;
     if tt_move.is_none() && depth >= 6 {
          let iid_depth = depth - 2;
@@ -686,7 +541,6 @@ fn negamax(
          }
     }
 
-    // Singular Extension Check
     let mut extension: u8 = 0;
     if !in_check && depth >= 8 {
         if let Some((ref entry, TTFlag::Beta)) = tt_result {
@@ -695,14 +549,10 @@ fn negamax(
                     let se_beta = (entry.score as i32).saturating_sub(2 * depth as i32);
                     let se_depth = (depth - 1) / 2;
 
-                    // Search other moves at reduced depth to verify singularity
-                    // Optimization: Only check first few moves and use StagedMoveGen
                     let mut is_singular = true;
                     let mut moves_checked = 0;
-                    let max_checks = 6; // Limit checks to avoid overhead
+                    let max_checks = 6;
 
-                    // We don't have a staged gen for *other* moves easily without excluding TT move inside
-                    // But we can use StagedMoveGen and skip the TT move.
                     let mut se_gen = StagedMoveGen::new(board, None, ply);
 
                     while let Some(other_mv) = se_gen.next() {
@@ -710,7 +560,7 @@ fn negamax(
 
                         moves_checked += 1;
                         if moves_checked > max_checks {
-                            is_singular = false; // Assume not singular if we have many alternatives
+                            is_singular = false;
                             break;
                         }
 
@@ -763,7 +613,6 @@ fn negamax(
         
         let mut reduction = 0u8;
         if i >= 2 && depth >= 2 && !is_capture && !gives_check && !in_check {
-             // Check if it is a killer move
              let ply_idx = (ply as usize).min(63);
              let is_killer = KILLERS.with(|k| {
                  let k = k.borrow();
@@ -771,11 +620,10 @@ fn negamax(
              });
 
              if !is_killer {
-                 reduction = 1; // Fixed reduction
+                 reduction = 1;
              }
         }
         
-        // Apply extension to new depth
         let extend = if i == 0 { extension } else { 0 };
         let new_depth = (depth as i16 - 1 - reduction as i16 + extend as i16).max(0) as u8;
         let mut score;
@@ -837,26 +685,8 @@ fn negamax(
     (best_score, best_move)
 }
 
-/// Iterative deepening search with aspiration windows
-pub fn iterative_deepening(
-    board: &Board, 
-    max_depth: u8, 
-    aggressiveness: u8,
-    wtime: Option<u64>,
-    btime: Option<u64>,
-    movestogo: Option<u64>
-) -> (Option<ChessMove>, i32) {
-    AGGRESSIVENESS.with(|a| a.set(aggressiveness));
-    
-    // Check Tablebase first!
-    if let Some((tb_move, score)) = tablebase::probe_root(board) {
-        if is_debug() {
-             eprintln!("[DEBUG] Syzygy hit: {} score {}", tb_move, score);
-        }
-        return (Some(tb_move), score);
-    }
-    
-    reset_node_counts();
+/// Helper function to reset thread-local stats at start of search
+fn reset_thread_local_stats() {
     KILLERS.with(|k| *k.borrow_mut() = [[None; 2]; 64]);
     HISTORY.with(|h| {
         let mut hist = h.borrow_mut();
@@ -866,23 +696,25 @@ pub fn iterative_deepening(
             }
         }
     });
+}
+
+/// The core search loop used by all threads
+fn iterative_deepening_worker(
+    board: &Board,
+    max_depth: u8,
+    aggressiveness: u8,
+    time_manager: Option<TimeManager>,
+    _is_main_thread: bool
+) -> (Option<ChessMove>, i32) {
+    AGGRESSIVENESS.with(|a| a.set(aggressiveness));
     
-    let time_manager = TimeManager::new(wtime, btime, movestogo, board.side_to_move());
-    
-    if is_debug() {
-        eprintln!("[DEBUG] iterative_deepening: starting max_depth={} aggr={}", max_depth, aggressiveness);
-    }
+    reset_thread_local_stats();
     
     let mut best_move = None;
     let mut best_score = 0;
-    
     let root_eval = eval::EvalState::new(board);
     
     for depth in 1..=max_depth {
-        if is_debug() {
-            eprintln!("[DEBUG] ID: starting depth {}/{}", depth, max_depth);
-        }
-        
         if let Some(tm) = time_manager {
             if depth > 4 && tm.start_time.elapsed().as_millis() > tm.allocated_time / 2 {
                 break;
@@ -914,12 +746,12 @@ pub fn iterative_deepening(
             best_score = score;
         }
         
-        let (nodes, qnodes) = get_node_counts();
-        // println!("info depth {} score cp {} nodes {} qnodes {} total {}",
-        //    depth, best_score, nodes, qnodes, nodes + qnodes);
+        // Only main thread (implied by caller context, or just let all update best)
+        // Actually, main thread should probably be the one returning the result.
+        // But for Lazy SMP, all threads populate TT.
     }
     
-    // Fallback: If we have NO best move (e.g. panic at depth 1), pick any legal move
+    // Fallback
     if best_move.is_none() {
         best_move = MoveGen::new_legal(board).next();
     }
@@ -927,8 +759,8 @@ pub fn iterative_deepening(
     (best_move, best_score)
 }
 
-/// Parallel search at root level using rayon with ITERATIVE DEEPENING
-pub fn parallel_root_search(
+/// Standard Serial Search (wrapper)
+pub fn iterative_deepening(
     board: &Board, 
     max_depth: u8, 
     aggressiveness: u8,
@@ -936,77 +768,68 @@ pub fn parallel_root_search(
     btime: Option<u64>,
     movestogo: Option<u64>
 ) -> (Option<ChessMove>, i32) {
-    AGGRESSIVENESS.with(|a| a.set(aggressiveness));
     
-    // Check Tablebase
+    // Check Tablebase first!
+    if let Some((tb_move, score)) = tablebase::probe_root(board) {
+        if is_debug() {
+             eprintln!("[DEBUG] Syzygy hit: {} score {}", tb_move, score);
+        }
+        return (Some(tb_move), score);
+    }
+
+    reset_node_counts();
+    
+    let time_manager = TimeManager::new(wtime, btime, movestogo, board.side_to_move());
+    iterative_deepening_worker(board, max_depth, aggressiveness, time_manager, true)
+}
+
+/// Lazy SMP Search - Spawns helper threads to spam the search
+pub fn lazy_smp_search(
+    board: &Board,
+    max_depth: u8,
+    aggressiveness: u8,
+    wtime: Option<u64>,
+    btime: Option<u64>,
+    movestogo: Option<u64>,
+    num_threads: usize
+) -> (Option<ChessMove>, i32) {
+    if num_threads <= 1 {
+        return iterative_deepening(board, max_depth, aggressiveness, wtime, btime, movestogo);
+    }
+    
+    // Check Tablebase first!
     if let Some((tb_move, score)) = tablebase::probe_root(board) {
          return (Some(tb_move), score);
     }
 
-    KILLERS.with(|k| *k.borrow_mut() = [[None; 2]; 64]);
     reset_node_counts();
-    
-    let moves: Vec<ChessMove> = MoveGen::new_legal(board).collect();
-    if moves.is_empty() {
-        return (None, 0);
-    }
-    
-    let mut best_move = None;
-    let mut best_score = 0;
-    
     let time_manager = TimeManager::new(wtime, btime, movestogo, board.side_to_move());
     
-    let root_eval = eval::EvalState::new(board);
+    // Spawn helper threads
+    let mut handles = Vec::new();
+    let helper_board = board.clone();
     
-    for depth in 1..=max_depth {
-        if let Some(tm) = time_manager {
-            if tm.check_time() { break; }
-        }
-        
-        let mut current_best_move = moves[0];
-        let mut current_best_score = -INFINITY;
-        
-        let results: Vec<(ChessMove, i32)> = moves
-            .par_iter()
-            .map(|&mv| {
-                if STOP_SEARCH.load(Ordering::Relaxed) {
-                    return (mv, -INFINITY);
-                }
-                
-                if let Some(tm) = time_manager {
-                    if tm.check_time() {
-                        STOP_SEARCH.store(true, Ordering::Relaxed);
-                        return (mv, -INFINITY);
-                    }
-                }
-                
-                let mut new_eval = root_eval;
-                new_eval.apply_move(board, mv);
-                let new_board = board.make_move_new(mv);
-                let (score, _) = negamax(&new_board, new_eval, Some(mv), depth - 1, -INFINITY, INFINITY, 1, true, time_manager);
-                (mv, -score)
-            })
-            .collect();
-            
-        if STOP_SEARCH.load(Ordering::Relaxed) {
-            break;
-        }
-        
-        for (mv, score) in results {
-            if score > current_best_score {
-                current_best_score = score;
-                current_best_move = mv;
-            }
-        }
-        
-        best_move = Some(current_best_move);
-        best_score = current_best_score;
-        
-        let hash = board.get_hash();
-        tt_store(hash, depth, best_score, TTFlag::Exact, best_move);
-        
-        // println!("info depth {} score cp {} pv {}", depth, best_score, current_best_move);
+    for _ in 0..num_threads-1 {
+        let b = helper_board.clone();
+        let tm = time_manager.clone();
+        handles.push(thread::spawn(move || {
+            // Helpers execute search but ignore result, they just populate TT
+            iterative_deepening_worker(&b, max_depth, aggressiveness, tm, false);
+        }));
     }
     
-    (best_move, best_score)
+    // Main thread search
+    let (best_move, score) = iterative_deepening_worker(board, max_depth, aggressiveness, time_manager, true);
+
+    // Stop helpers
+    stop();
+
+    for h in handles {
+        let _ = h.join();
+    }
+
+    // Clear stop flag for next search
+    clear_stop_flag();
+
+    (best_move, score)
 }
