@@ -212,10 +212,9 @@ impl<'a> Iterator for StagedMoveGen<'a> {
                      self.idx += 1;
                      if k_idx < 2 {
                          if let Some(km) = self.killers[k_idx] {
-                             // Code Rabbit Fix: Use proper Option comparison
+                             // Code Rabbit: Idiomatic Option comparison
                              // Must be legal, quiet, and not TT move
-                             let is_tt = self.tt_move.map_or(false, |tt| tt == km);
-                             if !is_tt
+                             if self.tt_move != Some(km)
                                 // Check for quiet move: destination must be empty
                                 && self.board.piece_on(km.get_dest()).is_none()
                                 // Verify legality
