@@ -13,23 +13,23 @@ pub const QUEEN_VAL: [i32; 2] = [2538, 2682];
 
 // King Safety Constants
 // Tuned values: Increased to punish open kings more severely (Range 0-25)
-const ATTACK_WEIGHT: [i32; 5] = [0, 10, 10, 15, 25]; // Piece types: Pawn=0, Knight=1, Bishop=2, Rook=3, Queen=4
+const ATTACK_WEIGHT: [i32; 5] = [0, 12, 12, 18, 30]; // Piece types: Pawn=0, Knight=1, Bishop=2, Rook=3, Queen=4
 const SAFETY_TABLE: [i32; 100] = [
-    0,  0,   1,   2,   3,   5,   7,   9,  12,  15,
-   18,  22,  26,  30,  35,  39,  44,  50,  56,  62,
-   68,  75,  82,  85,  89,  97, 105, 113, 122, 131,
-  140, 150, 169, 180, 191, 202, 213, 225, 237, 248,
-  260, 272, 283, 295, 307, 319, 330, 342, 354, 366,
-  377, 389, 401, 412, 424, 436, 448, 459, 471, 483,
-  494, 500, 500, 500, 500, 500, 500, 500, 500, 500,
-  500, 500, 500, 500, 500, 500, 500, 500, 500, 500,
-  500, 500, 500, 500, 500, 500, 500, 500, 500, 500,
-  500, 500, 500, 500, 500, 500, 500, 500, 500, 500,
+    0,   0,   0,   1,   3,   5,   7,   9,  12,  16,
+   20,  24,  28,  33,  39,  45,  51,  57,  64,  72,
+   80,  88,  96, 105, 115, 125, 135, 145, 156, 168,
+  180, 192, 204, 217, 231, 245, 259, 273, 288, 304,
+  320, 336, 352, 369, 387, 405, 423, 441, 460, 480,
+  500, 520, 540, 561, 583, 605, 627, 649, 672, 696,
+  720, 744, 768, 793, 819, 845, 871, 897, 900, 900,
+  900, 900, 900, 900, 900, 900, 900, 900, 900, 900,
+  900, 900, 900, 900, 900, 900, 900, 900, 900, 900,
+  900, 900, 900, 900, 900, 900, 900, 900, 900, 900,
 ];
 
 // Pawn Structure
 const PAWN_ISOLATED: i32 = -15;
-const PAWN_PASSED: [i32; 8] = [0, 5, 10, 20, 35, 60, 100, 200]; // Bonus by rank
+const PAWN_PASSED: [i32; 8] = [0, 5, 10, 20, 40, 80, 150, 200]; // Bonus by rank
 
 // Mobility (Safe squares available)
 const MOBILITY_BONUS: [i32; 5] = [0, 4, 3, 2, 1]; // Bonus per safe square for N, B, R, Q
@@ -217,6 +217,10 @@ fn file_bb(sq: Square) -> BitBoard {
     BitBoard::new(bb)
 }
 
+fn rank_bb(rank: u8) -> BitBoard {
+    BitBoard::new(0xFF << (rank * 8))
+}
+
 // Squares in front of the pawn (for passed pawn check)
 fn front_span(color: Color, sq: Square) -> BitBoard {
     let bb = file_bb(sq);
@@ -306,6 +310,23 @@ fn eval_pawns(board: &Board, color: Color) -> i32 {
             let r = if color == Color::White { rank.to_index() } else { 7 - rank.to_index() };
             // Base bonus
             let mut bonus = PAWN_PASSED[r];
+
+            // Connected Bonus: Friendly pawns on adjacent files AND (Rank or Rank-1/Rank+1)
+            let rank_idx = rank.to_index();
+            let support_mask = if color == Color::White {
+                let mut m = rank_bb(rank_idx as u8);
+                if rank_idx > 0 { m |= rank_bb((rank_idx - 1) as u8); }
+                m
+            } else {
+                let mut m = rank_bb(rank_idx as u8);
+                if rank_idx < 7 { m |= rank_bb((rank_idx + 1) as u8); }
+                m
+            };
+
+            if (neighbors & pawns & support_mask).0 != 0 {
+                bonus += bonus / 2; // 50% boost for connected passers
+            }
+
             // Scale based on king proximity
             let king_sq = board.king_square(color);
             let enemy_king_sq = board.king_square(!color);
@@ -463,7 +484,7 @@ fn eval_king_endgame(board: &Board, color: Color) -> i32 {
 }
 
 /// Main evaluation function
-pub fn evaluate_with_state(board: &Board, state: &EvalState, alpha: i32, beta: i32) -> i32 {
+pub fn evaluate_with_state(board: &Board, state: &EvalState, _alpha: i32, _beta: i32) -> i32 {
     let us = board.side_to_move();
     let them = !us;
 
@@ -542,7 +563,8 @@ pub fn evaluate_lazy(board: &Board, state: &EvalState, alpha: i32, beta: i32) ->
 
     let score = (score_mg * mg_weight + score_eg * eg_weight) / 24;
 
-    let margin = 200;
+    // Relaxed margin to prevent pruning tactical sequences (sacrifices)
+    let margin = 500;
     if score < alpha - margin {
         return alpha;
     }
