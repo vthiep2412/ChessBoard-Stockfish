@@ -433,15 +433,8 @@ fn quiescence(board: &Board, eval_state: eval::EvalState, mut alpha: i32, beta: 
          // Skip non-tactical moves
          if !eval::is_tactical(board, m) { continue; }
          
-         // Removed SEE pruning because eval::see is broken (returns negative for good captures)
-         // if eval::see(board, m) < 0 { continue; }
-
-         // Temporary cheap capture filter while eval::see is broken:
-         // prune clearly losing captures based on a static material delta.
-         if m.get_promotion().is_none() {
-             // Conservative pruning REMOVED: It interferes with finding sacrifices in QSearch.
-             // We rely on MVV/LVA and search depth to handle bad captures.
-         }
+         // SEE pruning (re-enabled)
+         if eval::see(board, m) < 0 { continue; }
          
          if m.get_promotion().is_some() {
              has_promotions = true;
@@ -614,8 +607,8 @@ fn negamax(
         gen.set_iterator_mask(*targets);
 
         for mv in gen {
-            // Removed SEE pruning
-            // if eval::see(board, mv) < 0 { continue; }
+            // SEE pruning (re-enabled)
+            if eval::see(board, mv) < 0 { continue; }
 
             let mut new_eval = eval_state;
             new_eval.apply_move(board, mv);
