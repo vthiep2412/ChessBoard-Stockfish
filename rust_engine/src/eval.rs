@@ -14,6 +14,7 @@ pub const QUEEN_VAL: [i32; 2] = [2538, 2682];
 // King Safety Constants
 // Tuned values: Increased to punish open kings more severely (Range 0-25)
 const ATTACK_WEIGHT: [i32; 5] = [0, 12, 12, 18, 30]; // Piece types: Pawn=0, Knight=1, Bishop=2, Rook=3, Queen=4
+const SAFETY_TABLE_MAX: i32 = 900;
 const SAFETY_TABLE: [i32; 100] = [
     0,   0,   0,   1,   3,   5,   7,   9,  12,  16,
    20,  24,  28,  33,  39,  45,  51,  57,  64,  72,
@@ -21,15 +22,16 @@ const SAFETY_TABLE: [i32; 100] = [
   180, 192, 204, 217, 231, 245, 259, 273, 288, 304,
   320, 336, 352, 369, 387, 405, 423, 441, 460, 480,
   500, 520, 540, 561, 583, 605, 627, 649, 672, 696,
-  720, 744, 768, 793, 819, 845, 871, 897, 900, 900,
-  900, 900, 900, 900, 900, 900, 900, 900, 900, 900,
-  900, 900, 900, 900, 900, 900, 900, 900, 900, 900,
-  900, 900, 900, 900, 900, 900, 900, 900, 900, 900,
+  720, 744, 768, 793, 819, 845, 871, 897, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX,
+  SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX,
+  SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX,
+  SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX, SAFETY_TABLE_MAX,
 ];
 
 // Pawn Structure
 const PAWN_ISOLATED: i32 = -15;
 const PAWN_PASSED: [i32; 8] = [0, 5, 10, 20, 40, 80, 150, 200]; // Bonus by rank
+const LAZY_EVAL_MARGIN: i32 = 500;
 
 // Mobility (Safe squares available)
 const MOBILITY_BONUS: [i32; 5] = [0, 4, 3, 2, 1]; // Bonus per safe square for N, B, R, Q
@@ -312,16 +314,19 @@ fn eval_pawns(board: &Board, color: Color) -> i32 {
             let mut bonus = PAWN_PASSED[r];
 
             // Connected Bonus: Friendly pawns on adjacent files AND (Rank or Rank-1/Rank+1)
-            let rank_idx = rank.to_index();
-            let support_mask = if color == Color::White {
-                let mut m = rank_bb(rank_idx as u8);
-                if rank_idx > 0 { m |= rank_bb((rank_idx - 1) as u8); }
-                m
+            let rank_idx = rank.to_index() as u8;
+
+            // Calculate "rank behind" for support (White: r-1, Black: r+1)
+            let behind_rank = if color == Color::White {
+                rank_idx.checked_sub(1)
             } else {
-                let mut m = rank_bb(rank_idx as u8);
-                if rank_idx < 7 { m |= rank_bb((rank_idx + 1) as u8); }
-                m
+                if rank_idx < 7 { Some(rank_idx + 1) } else { None }
             };
+
+            let mut support_mask = rank_bb(rank_idx);
+            if let Some(r) = behind_rank {
+                support_mask |= rank_bb(r);
+            }
 
             if (neighbors & pawns & support_mask).0 != 0 {
                 bonus += bonus / 2; // 50% boost for connected passers
@@ -564,7 +569,7 @@ pub fn evaluate_lazy(board: &Board, state: &EvalState, alpha: i32, beta: i32) ->
     let score = (score_mg * mg_weight + score_eg * eg_weight) / 24;
 
     // Relaxed margin to prevent pruning tactical sequences (sacrifices)
-    let margin = 500;
+    let margin = LAZY_EVAL_MARGIN;
     if score < alpha - margin {
         return alpha;
     }
