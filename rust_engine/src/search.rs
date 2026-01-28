@@ -449,6 +449,8 @@ fn quiescence(board: &Board, eval_state: eval::EvalState, mut alpha: i32, beta: 
                      continue;
                  }
              }
+         }
+         
          if m.get_promotion().is_some() {
              has_promotions = true;
          }

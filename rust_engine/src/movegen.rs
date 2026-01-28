@@ -41,6 +41,10 @@ impl MoveList {
         if self.count < MAX_MOVES {
             self.moves[self.count] = MaybeUninit::new(ScoredMove { mv, score });
             self.count += 1;
+        } else {
+            // Code Rabbit Fix: Warn on move overflow instead of silent loss
+            #[cfg(debug_assertions)]
+            eprintln!("Warning: MAX_MOVES exceeded, move dropped: {}", mv);
         }
     }
 
@@ -208,8 +212,10 @@ impl<'a> Iterator for StagedMoveGen<'a> {
                      self.idx += 1;
                      if k_idx < 2 {
                          if let Some(km) = self.killers[k_idx] {
+                             // Code Rabbit Fix: Use proper Option comparison
                              // Must be legal, quiet, and not TT move
-                             if km != self.tt_move.unwrap_or_default()
+                             let is_tt = self.tt_move.map_or(false, |tt| tt == km);
+                             if !is_tt
                                 // Check for quiet move: destination must be empty
                                 && self.board.piece_on(km.get_dest()).is_none()
                                 // Verify legality

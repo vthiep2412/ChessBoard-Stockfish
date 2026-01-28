@@ -1,56 +1,45 @@
-# Questions for Jules - Chess Engine Tuning
+# Jules Session - Quality Score Improvement
 
-Hi Jules! I'm helping tune a Rust chess engine and we're stuck at ~66% move quality (vs Stockfish reference). The engine is fast (3-5M NPS) but makes suboptimal moves. Could you help diagnose?
+## Current State
+- **Quality Score**: 70.7% (24/30 moves) - EXPERT tier
+- **Target**: 90%+ GRANDMASTER tier
+- **NPS**: 3.5-4.6M (good speed)
+- **Build**: Passing ✅
 
-## Current Situation
+## Recent Changes Applied
+1. ✅ Delta pruning deferred for promotions (Qodo suggestion)
+2. ✅ SEE pruning removed (was buggy)
+3. ✅ Material delta pruning added as SEE replacement
+4. ✅ Killer move comparison bug fixed (`unwrap_or_default()` → `map_or`)
+5. ✅ MAX_MOVES overflow warning added
 
-- **Engine**: Rust chess engine with Alpha-Beta + TT + LMR/LMP pruning
-- **Benchmark**: 30 test positions, depth 16, compared to Stockfish's top 5 moves
-- **Problem**: Quality Score is 66.7% (ADVANCED rating), target is >90% (GRANDMASTER)
-- **Speed**: Very fast (3.5M+ NPS), so we have performance budget to trade for accuracy
+## Failing Positions (Need Investigation)
+1. **bk_pawn_break**: Engine: `c3g3`, SF: `d4d5` - Missing pawn break
+2. **mid_knight_maneuver**: Engine: `d1b3`, SF: `d2e4` - Knight positioning
+3. **ara_pawn_storm**: Engine: `g4g5`, SF: `e5f6` - Pawn storm tactics
+4. **ara_bishop_sac_mate**: Engine: `e2c2`, SF: `d3h7` - Missing bishop sacrifice
+5. **lct_advanced_push**: Engine: `h1h2`, SF: `d5d6` - Passed pawn push
 
-## Key Files
+## Potential Root Causes (NOT SURE, YOU MUST AUDIT)
+1. **King Safety** weights may be too low (missing sacrifices)
+2. **Passed Pawn** evaluation may not incentivize advancement enough
+3. **Attack Weights** may need tuning (`ATTACK_WEIGHT` in eval.rs)
+4. **Mobility** evaluation might undervalue piece activity
 
-- `src/search.rs`: Negamax with Alpha-Beta, TT, NMP, LMR, LMP, Singular Extensions
-- `src/eval.rs`: Material + PST + Pawn Structure + Mobility + King Safety
-- `benchmark.py`: Test harness comparing moves to cached Stockfish responses
+## Files to Review (NOT SURE, YOU MUST AUDIT)
+- `src/eval.rs` - Evaluation constants and king safety
+- `src/search.rs` - Pruning heuristics (LMP, LMR, NMP)
+- `src/pst.rs` - Piece-square tables
 
-## Recent Changes Made
+## Suggested Actions (NOT SURE, YOU MUST AUDIT)
+1. Analyze failing positions to understand what evaluation factor is missing
+2. Consider increasing `ATTACK_WEIGHT` (currently `[0, 9, 9, 12, 20]`)
+3. Review passed pawn bonus for rank 6+
+4. Check if lazy eval cutoffs are too aggressive
 
-1. **Incremental EvalState**: `evaluate_lazy` now uses passed `EvalState` instead of rebuilding (O(1) vs O(64))
-2. **Quiescence Search**: Now uses `is_tactical(capture OR promotion)` instead of just `is_capture`
-3. **LMP Relaxed**: Base from 3 → 24 (less aggressive pruning)
-4. **LMR Relaxed**: Start at depth 4 (was 3), history divisor 8192 (was 2048)
-5. **Removed Lazy Eval from `evaluate_with_state`**: Force full King Safety/Mobility checks
-
-## Specific Questions
-
-1. **Move Ordering**: Is our MVV-LVA + History + Killers + Countermove heuristic sufficient? Should we add a different scoring method?
-
-2. **Quiescence Search**: Is there a risk we're searching too many nodes in Q-search that don't matter? Should we add a Delta Pruning margin?
-
-3. **TT Interaction**: Could stale TT entries from incremental updates be causing issues? We only clear TT at startup, not between positions.
-
-4. **Evaluation Weights**: Do the weights in `eval.rs` (e.g., King Safety, Mobility) seem balanced? Could they be causing the engine to undervalue tactics?
-
-5. **LMR Re-search**: When LMR fails high, we do a full re-search. Is this implementation correct, or could there be a bug causing us to miss good moves?
-
-## Sample Failing Position
-
+## Build & Test
+```bash
+cd rust_engine
+.\build.bat
+python benchmark.py 14
 ```
-Position: mid_bishop_development
-FEN: r1bq1rk1/ppp2ppp/2n1pn2/3p4/1bPP4/2NBPN2/PP3PPP/R1BQK2R w KQ - 0 7
-Our Move: d1c2
-SF Top 5: d1a4, d1c2, h2h3, e3e4, g1h1
-Result: ★2 (Top 2, but not Top 1)
-```
-
-We often get Top 2-3 instead of Top 1, suggesting we're close but missing something subtle.
-
-## What Would Help
-
-- Any ideas on parameter tuning (margins, reduction formulas)?
-- Suggestions for additional search features (IID, Probcut tuning, etc.)?
-- Evaluation term adjustments?
-
-Thanks for any insights!

@@ -37,3 +37,4 @@ rust_engine/rust_engine.dll
 rust_engine/setup_stockfish.py
 rust_engine/benchmark_sf11.py
 rust_engine/benchmark_sf_hce.py
+rust_engine/jules_questions.md
