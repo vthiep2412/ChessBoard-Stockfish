@@ -650,9 +650,8 @@ pub fn piece_value(piece: Piece) -> i32 {
 // Helper to find the least valuable attacker for the given side
 fn get_least_valuable_attacker(board: &Board, sq: Square, side: Color, occupied: BitBoard) -> Option<(Piece, Square)> {
     // 1. Pawns
-    // Check pawns of 'side' that attack 'sq'.
-    // Equivalent to checking if 'sq' is attacked by a pawn of 'side'.
-    let pawns = board.pieces(Piece::Pawn) & board.color_combined(side);
+    // Check pawns of 'side' that attack 'sq' AND are currently occupied (not captured)
+    let pawns = board.pieces(Piece::Pawn) & board.color_combined(side) & occupied;
     if pawns.0 != 0 {
         // Attack vectors reversed:
         // If side is White, attackers are on squares that Black pawns at 'sq' would attack.
@@ -669,7 +668,7 @@ fn get_least_valuable_attacker(board: &Board, sq: Square, side: Color, occupied:
     }
 
     // 2. Knights
-    let knights = board.pieces(Piece::Knight) & board.color_combined(side);
+    let knights = board.pieces(Piece::Knight) & board.color_combined(side) & occupied;
     if knights.0 != 0 {
         let attacks = chess::get_knight_moves(sq) & knights;
         if attacks.0 != 0 {
@@ -678,28 +677,28 @@ fn get_least_valuable_attacker(board: &Board, sq: Square, side: Color, occupied:
     }
 
     // 3. Bishops
-    let bishops = board.pieces(Piece::Bishop) & board.color_combined(side);
+    let bishops = board.pieces(Piece::Bishop) & board.color_combined(side) & occupied;
     if bishops.0 != 0 {
          let attacks = chess::get_bishop_moves(sq, occupied) & bishops;
          if attacks.0 != 0 { return Some((Piece::Bishop, attacks.to_square())); }
     }
 
     // 4. Rooks
-    let rooks = board.pieces(Piece::Rook) & board.color_combined(side);
+    let rooks = board.pieces(Piece::Rook) & board.color_combined(side) & occupied;
     if rooks.0 != 0 {
          let attacks = chess::get_rook_moves(sq, occupied) & rooks;
          if attacks.0 != 0 { return Some((Piece::Rook, attacks.to_square())); }
     }
 
     // 5. Queens
-    let queens = board.pieces(Piece::Queen) & board.color_combined(side);
+    let queens = board.pieces(Piece::Queen) & board.color_combined(side) & occupied;
     if queens.0 != 0 {
          let attacks = (chess::get_bishop_moves(sq, occupied) | chess::get_rook_moves(sq, occupied)) & queens;
          if attacks.0 != 0 { return Some((Piece::Queen, attacks.to_square())); }
     }
 
     // 6. King
-    let king = board.pieces(Piece::King) & board.color_combined(side);
+    let king = board.pieces(Piece::King) & board.color_combined(side) & occupied;
     if king.0 != 0 {
          let attacks = chess::get_king_moves(sq) & king;
          if attacks.0 != 0 { return Some((Piece::King, attacks.to_square())); }
@@ -754,12 +753,15 @@ pub fn see(board: &Board, mv: chess::ChessMove) -> i32 {
 
     // If EP, remove the captured pawn (on adjacent square)
     if board.en_passant() == Some(to) && attacker_piece == Piece::Pawn {
-        let cap_sq_idx = if board.side_to_move() == Color::White {
-            to.to_index() - 8
+        // Safe EP capture square calculation
+        let cap_rank = if board.side_to_move() == Color::White {
+             // White moves up, captured pawn is behind 'to' (Rank 5 -> 4)
+             chess::Rank::Fifth
         } else {
-            to.to_index() + 8
+             // Black moves down, captured pawn is behind 'to' (Rank 4 -> 5)
+             chess::Rank::Fourth
         };
-        let cap_sq = unsafe { Square::new(cap_sq_idx as u8) };
+        let cap_sq = Square::make_square(cap_rank, to.get_file());
         occupied ^= BitBoard::from_square(cap_sq);
     }
 
