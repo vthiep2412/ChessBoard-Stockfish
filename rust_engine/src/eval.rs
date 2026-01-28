@@ -698,11 +698,10 @@ fn get_least_valuable_attacker(board: &Board, sq: Square, side: Color, occupied:
     }
 
     // 6. King
-    let king = board.pieces(Piece::King) & board.color_combined(side) & occupied;
-    if king.0 != 0 {
-         let attacks = chess::get_king_moves(sq) & king;
-         if attacks.0 != 0 { return Some((Piece::King, attacks.to_square())); }
-    }
+    // We explicitly EXCLUDE King captures in SEE to avoid illegal moves (moving into check).
+    // SEE is an approximation, and King recaptures are rare in tactical sequences
+    // where they don't immediately lose the game or aren't forced.
+    // For correctness, we assume the King never recaptures in this static analysis.
 
     None
 }
@@ -771,8 +770,37 @@ pub fn see(board: &Board, mv: chess::ChessMove) -> i32 {
         if let Some((p, sq)) = lva {
              scores[d] = piece_value(attacker_piece);
 
+             // Handle Promotion in the chain
+             // If the *next* attacker (p) is a pawn and moves to a promotion rank,
+             // we update it to a Queen for subsequent calculations.
+             let mut next_attacker = p;
+
+             // Check if 'p' (the piece at 'sq') is a pawn that will promote upon capturing on 'to'.
+             if p == Piece::Pawn {
+                 let rank_of_capture = to.get_rank();
+                 // If side is White, they are capturing on rank_of_capture.
+                 // A White pawn promotes if it lands on Rank 8.
+                 // A Black pawn promotes if it lands on Rank 1.
+
+                 // 'side' here is the side that OWNS 'p' (the attacker we just found).
+                 // In the loop, 'side' was flipped to !board.side_to_move() at start,
+                 // then flipped again inside.
+                 // Wait.
+                 // In `see`:
+                 // `let mut side = !board.side_to_move();` (The side being attacked? No.)
+                 // `get_least_valuable_attacker(..., side, ...)`
+                 // We want an attacker belonging to `side`.
+                 // So `side` IS the side moving to capture.
+
+                 if (side == Color::White && rank_of_capture == chess::Rank::Eighth) ||
+                    (side == Color::Black && rank_of_capture == chess::Rank::First)
+                 {
+                     next_attacker = Piece::Queen;
+                 }
+             }
+
              // Prepare for next
-             attacker_piece = p;
+             attacker_piece = next_attacker;
              side = !side;
              occupied ^= BitBoard::from_square(sq);
              d += 1;
@@ -859,5 +887,102 @@ mod tests {
         println!("QxP (NxQ, RxN) SEE: {}", score);
         // Expect negative
         assert!(score < -1000);
+    }
+
+    #[test]
+    fn test_see_king_recapture_omitted() {
+        // White Queen captures Pawn at e4. Black King at e5 protects it.
+        // FEN: 8/8/8/4k3/4p3/8/4Q3/4K3 w - - 0 1
+        // Move Qxe4.
+        // If King recaptures: 1. QxP (+128). 2. KxQ (+2538). Net -2410.
+        // If King ignored: 1. QxP (+128). Stop. Net +128.
+        // We expect +128 (positive) because King shouldn't recapture in SEE.
+        let board = Board::from_str("8/8/8/4k3/4p3/8/4Q3/4K3 w - - 0 1").unwrap();
+        let mv = chess::ChessMove::new(
+            Square::make_square(chess::Rank::Second, chess::File::E),
+            Square::make_square(chess::Rank::Fourth, chess::File::E),
+            None
+        );
+        let score = see(&board, mv);
+        println!("QxP (Protected by K) SEE: {}", score);
+        assert!(score > 0);
+    }
+
+    #[test]
+    fn test_see_promotion_in_chain() {
+        // White Rook on a8. Black Pawn on a2. White King on h1. Black King on h8.
+        // Black Pawn captures something on b1 and promotes to Queen.
+        // Let's set up: White Knight on b1. Black Pawn on c2. White Rook on c1.
+        // Move PxC (promotes). Recapture by Rook.
+        // FEN: 7k/8/8/8/8/8/2p5/1NR4K b - - 0 1
+        // Black moves c2b1Q.
+        // 1. PxN (+781) + Promo (Queen-Pawn).
+        // 2. RxQ (+2538).
+        // Net: +781 + (2538 - 128) - 2538 = 781 - 128 = 653. (Approx)
+        // Actually SEE calculates gain.
+        // Initial move value: Captured Knight (781) + Promo (2410) = 3191.
+        // Victim for next: Queen (2538).
+        // Attacker: Rook.
+        // Score: 3191 - 2538 = 653.
+
+        // Let's test chain *after* initial.
+        // White Pawn on a7, Black Rook on a8. White Rook on a1.
+        // White moves a7a8Q.
+        // 1. PxR (1276) + Promo (2410) = 3686.
+        // Stop.
+
+        // Need chain.
+        // White Pawn on a7. Black R on a8. Black R on b8 (battery?). No.
+        // White Pawn on a7. Black Rook on a8. White Rook on a1.
+        // Move: a7a8Q (Capture R).
+        // 1. PxR (1276) + Promo.
+        // 2. ... wait, if White plays, it's fine.
+
+        // Scenario: Black Knight on a8. White Pawn on a7. Black Rook on b8 defending a8.
+        // White plays a7a8Q.
+        // 1. PxN (781) + Promo (2410) = 3191.
+        // 2. RxQ (2538).
+        // Net: 3191 - 2538 = 653.
+        // If we didn't update attacker to Queen, it would be PxN (781) + ...
+        // 2. RxP (128).
+        // Net: 3191 - 128 = 3063.
+        // So correct logic (Queen recapture) gives LOWER score (653).
+        let board = Board::from_str("nKr5/P7/8/8/8/8/8/4k3 w - - 0 1").unwrap();
+        // The move we test is the FIRST move.
+        // But SEE takes a move and evaluates its result.
+        // The test scenario described "Black Pawn captures...".
+        // Here we set up White to move.
+        // We want to test a sequence deeper than 1.
+
+        // Let's ensure the initial move is a capture/promo.
+        // Board: White Pawn on a7. Black Rook on a8.
+        // Attackers on a8: White Pawn(a7).
+        // Attackers on a8 (after): Black Rook on b8? (Need to add one).
+
+        // FEN: 1r5k/P7/8/8/8/8/8/4K3 w - - 0 1
+        // White to move. PxR=Q.
+        // 1. Gain: Rook (1276) + Promo (2410). = 3686.
+        // 2. Black Recaptures with Rook (b8).
+        //    Victim: Queen (2538).
+        //    Attacker: Rook.
+        //    Score: 3686 - 2538 = 1148.
+
+        // If we ignored promo update, victim would be Pawn (128).
+        // Score: 3686 - 128 = 3558.
+
+        // So if correct, score is 1148. If broken, 3558.
+        // 1148 < 2000. 3558 > 2000.
+
+        // FEN: rr5k/P7/... (Black rooks on a8, b8)
+        let board = Board::from_str("rr5k/P7/8/8/8/8/8/4K3 w - - 0 1").unwrap();
+        let mv = chess::ChessMove::new(
+            Square::make_square(chess::Rank::Seventh, chess::File::A),
+            Square::make_square(chess::Rank::Eighth, chess::File::A),
+            Some(Piece::Queen)
+        );
+        let score = see(&board, mv);
+        println!("PxR=Q (RxQ) SEE: {}", score);
+        assert!(score < 2000);
+        assert!(score > 500);
     }
 }

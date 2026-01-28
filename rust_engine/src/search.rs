@@ -433,7 +433,7 @@ fn quiescence(board: &Board, eval_state: eval::EvalState, mut alpha: i32, beta: 
          // Skip non-tactical moves
          if !eval::is_tactical(board, m) { continue; }
          
-         // SEE pruning
+         // SEE pruning (re-enabled)
          if eval::see(board, m) < 0 { continue; }
          
          if m.get_promotion().is_some() {
@@ -607,7 +607,7 @@ fn negamax(
         gen.set_iterator_mask(*targets);
 
         for mv in gen {
-            // SEE pruning
+            // SEE pruning (re-enabled)
             if eval::see(board, mv) < 0 { continue; }
 
             let mut new_eval = eval_state;
