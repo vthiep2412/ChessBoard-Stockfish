@@ -433,23 +433,8 @@ fn quiescence(board: &Board, eval_state: eval::EvalState, mut alpha: i32, beta: 
          // Skip non-tactical moves
          if !eval::is_tactical(board, m) { continue; }
          
-         // Removed SEE pruning because eval::see is broken (returns negative for good captures)
-         // if eval::see(board, m) < 0 { continue; }
-
-         // Temporary cheap capture filter while eval::see is broken:
-         // prune clearly losing captures based on a static material delta.
-         if m.get_promotion().is_none() {
-             if let (Some(captured_piece), Some(attacker_piece)) = (board.piece_on(m.get_dest()), board.piece_on(m.get_source())) {
-                 let captured_value = eval::piece_value(captured_piece);
-                 let attacker_value = eval::piece_value(attacker_piece);
-                 let material_delta = captured_value - attacker_value;
-
-                 // Conservative pruning: If material gain + small margin < alpha, prune.
-                 if stand_pat + material_delta + 200 < alpha {
-                     continue;
-                 }
-             }
-         }
+         // SEE pruning
+         if eval::see(board, m) < 0 { continue; }
          
          if m.get_promotion().is_some() {
              has_promotions = true;
@@ -622,8 +607,8 @@ fn negamax(
         gen.set_iterator_mask(*targets);
 
         for mv in gen {
-            // Removed SEE pruning
-            // if eval::see(board, mv) < 0 { continue; }
+            // SEE pruning
+            if eval::see(board, mv) < 0 { continue; }
 
             let mut new_eval = eval_state;
             new_eval.apply_move(board, mv);
