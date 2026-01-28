@@ -605,12 +605,18 @@ pub fn mvv_lva_score(board: &Board, mv: chess::ChessMove) -> i32 {
     }
 
     // 2. Handle Captures
-    let victim = board.piece_on(mv.get_dest()).unwrap_or(Piece::Pawn); 
-    // Handle En Passant (victim is pawn)
-    let victim = if board.en_passant() == Some(mv.get_dest()) && board.piece_on(mv.get_source()) == Some(Piece::Pawn) {
-        Piece::Pawn
-    } else {
-        victim
+    // Code Rabbit Fix: Don't mask missing victim with unwrap_or
+    let victim = match board.piece_on(mv.get_dest()) {
+        Some(p) => p,
+        None => {
+            // Handle En Passant (victim is pawn on adjacent file)
+            if board.en_passant() == Some(mv.get_dest()) && board.piece_on(mv.get_source()) == Some(Piece::Pawn) {
+                Piece::Pawn
+            } else {
+                // Not a capture
+                return 0;
+            }
+        }
     };
 
     let attacker = board.piece_on(mv.get_source()).unwrap_or(Piece::Pawn);
@@ -645,8 +651,18 @@ pub fn see(board: &Board, mv: chess::ChessMove) -> i32 {
          return val - 100; // Value minus Pawn
     }
 
-    let victim = board.piece_on(mv.get_dest()).unwrap_or(Piece::Pawn);
-    // Note: SEE for promotions/EP is complex, keeping simple for now
+    // Code Rabbit Fix: Handle missing victim properly
+    let victim = match board.piece_on(mv.get_dest()) {
+        Some(p) => p,
+        None => {
+            // Handle En Passant
+            if board.en_passant() == Some(mv.get_dest()) && board.piece_on(mv.get_source()) == Some(Piece::Pawn) {
+                Piece::Pawn
+            } else {
+                return 0; // Not a capture
+            }
+        }
+    };
     let attacker = board.piece_on(mv.get_source()).unwrap_or(Piece::Pawn);
 
     fn piece_val(p: Piece) -> i32 {

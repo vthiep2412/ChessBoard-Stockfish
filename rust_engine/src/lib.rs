@@ -101,7 +101,19 @@ pub extern "C" fn evaluate_c(fen_ptr: *const c_char) -> c_int {
 }
 
 fn get_book() -> &'static Option<book::OpeningBook> {
-    BOOK.get_or_init(|| book::load_best_book())
+    BOOK.get_or_init(|| {
+        match book::load_best_book() {
+            Some(b) => {
+                // Book loaded successfully
+                Some(b)
+            }
+            None => {
+                // Code Rabbit Fix: Log configuration failure instead of silently returning None
+                eprintln!("Warning: Opening book not found or failed to load");
+                None
+            }
+        }
+    })
 }
 
 /// Get the best move for a given FEN position using alpha-beta search

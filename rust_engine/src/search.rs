@@ -627,7 +627,8 @@ fn negamax(
          let iid_depth = depth - 2;
          let _ = negamax(board, eval_state, prev_move, iid_depth, alpha, beta, ply, null_ok, time_manager);
          if let Some((entry, _)) = tt_probe(hash) {
-             tt_move = decode_move(entry.best_move);
+             // Code Rabbit Fix: Validate IID TT move legality
+             tt_move = decode_move(entry.best_move).filter(|&mv| board.legal(mv));
          }
     }
 

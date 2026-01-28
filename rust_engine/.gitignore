@@ -15,3 +15,6 @@ sendto*.md
 
 # Logs
 *.log
+benchmark_sf11.py
+benchmark_sf_hce.py
+setup_stockfish.py
