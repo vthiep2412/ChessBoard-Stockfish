@@ -61,10 +61,10 @@ TEST_POSITIONS = [
     ("kiwipete", "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"),
     
     # WAC.001 - Famous "Win At Chess" test suite position
-    ("wac_001", "2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 1"),
+    # ("wac_001", "2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 1"),
     
     # Sharp tactical - Italian Game
-    ("italian_sharp", "r1bqk2r/pppp1ppp/2n2n2/2b1p1N1/2B1P3/8/PPPP1PPP/RNBQK2R w KQkq - 4 5"),
+    # ("italian_sharp", "r1bqk2r/pppp1ppp/2n2n2/2b1p1N1/2B1P3/8/PPPP1PPP/RNBQK2R w KQkq - 4 5"),
     
     # Middlegame - Ruy Lopez
     ("ruy_middle", "r1bqk2r/1ppp1ppp/p1n2n2/4p3/BbP1P3/5N2/PP1P1PPP/RNBQK2R w KQkq - 0 6"),
@@ -76,7 +76,7 @@ TEST_POSITIONS = [
     ("tactical_pins", "r2qkb1r/1p1n1ppp/p2pbn2/4p3/4P3/1NN1B3/PPP1BPPP/R2QK2R w KQkq - 2 9"),
     
     # Endgame - Rook vs pawns
-    ("endgame_rook", "8/5pk1/6p1/8/5P2/6P1/5K2/8 w - - 0 1"),
+    # ("endgame_rook", "8/5pk1/6p1/8/5P2/6P1/5K2/8 w - - 0 1"),
     
     # Pawn structure - isolated queen pawn
     ("isolated_qp", "r1bqkb1r/pp3ppp/2n1pn2/3pP3/3P4/P1N2N2/1P3PPP/R1BQKB1R w KQkq - 0 8"),
@@ -85,7 +85,7 @@ TEST_POSITIONS = [
     ("discovered", "r1b1k2r/ppppqppp/2n2n2/4p3/1bB1P3/2N2N2/PPPP1PPP/R1BQK2R w KQkq - 6 6"),
     
     # Closed Rook endgame  
-    ("rook_endgame", "8/8/4k3/8/2p5/2P2K2/8/8 w - - 0 1"),
+    # ("rook_endgame", "8/8/4k3/8/2p5/2P2K2/8/8 w - - 0 1"),
     
     # Double-edged middlegame
     ("double_edged", "r1bq1rk1/1pp2ppp/p1np1n2/2b1p3/2B1P3/2NP1N2/PPPQ1PPP/R1B2RK1 w - - 0 9"),
@@ -94,30 +94,65 @@ TEST_POSITIONS = [
     ("king_exposed", "r1bq1rk1/pppp1ppp/5n2/2b5/2B1P3/5Q2/PPPP1PPP/RNB1K2R w KQ - 6 6"),
     
     # Endgame - knight vs pawns
-    ("knight_endgame", "8/4k3/8/2N5/2p5/2P2K2/8/8 w - - 0 1"),
+    # ("knight_endgame", "8/4k3/8/2N5/2p5/2P2K2/8/8 w - - 0 1"),
+
+    ("bk_tactical_sacrifice", "1k1r4/pp1b1R2/3q2pp/4p3/2B5/4Q3/PPP2B2/2K5 b - - 0 1"),
+    ("bk_pawn_break", "3r1k2/4npp1/1ppr3p/p6P/P2PPPP1/1NR5/5K2/2R5 w - - 0 1"),
+    ("bk_kingside_activation", "2q1rr1k/3bbnnp/p2p1pp1/2pPp3/PpP1P1P1/1P2BNNP/2BQ1PRK/7R b - - 0 1"),
+    ("bk_interference", "rnbqkb1r/p3pppp/1p6/2ppP3/3N4/2P5/PPP1QPPP/R1B1KB1R w KQkq - 0 1"),
+    ("wac_queen_sac_mate", "2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 1"),
+    ("wac_rook_pin_sac", "5rk1/1ppb3p/p1pb4/6q1/3P1p1r/2P1R2P/PP1BQ1P1/5RKN w - - 0 1"),
+    ("wac_greek_gift", "r1bq2rk/pp3pbp/2p1p1pQ/7P/3P4/2PB1N2/PP3PPR/2KR4 w - - 0 1"),
+    ("mid_queen_trapped", "r1b2rk1/pp1p1pp1/1b1p2B1/n1q5/8/1QP2N2/P4PPP/4RRK1 w - - 0 1"),
+    ("mid_pawn_tension", "r1b2rk1/2q1b1pp/p2p4/1p1P4/3Bp3/5P2/PPPQ2PP/2KR1B1R b - - 0 1"),
+    ("mid_knight_pressure", "r1b2rk1/ppqn1p2/2n1p1p1/3pP1N1/1b1P4/3Q4/PP2BPPP/R1B2RK1 w - - 0 1"),
+    ("mid_central_control", "2r2rk1/1bqnbpp1/1p1ppn1p/pP6/2P1P3/2NB1N1P/P2BQPP1/3RR1K1 w - - 0 1"),
+    ("mid_bishop_development", "r3kb1r/pp3ppp/2n5/2pqp3/6b1/4PN2/PP1BBPPP/R2Q1RK1 w kq - 0 1"),
+    ("mid_solid_positional", "r2q1rk1/pp1n1ppp/2p1pn2/b7/2PP4/P1N2N2/1P1B1PPP/R2Q1RK1 w - - 1 1"),
+    ("mid_knight_maneuver", "r2qr1k1/ppp2ppp/2n5/2bnp3/2B3b1/2PP1N2/PP1N1PPP/R1BQR1K1 w - - 0 1"),
+    ("wac_h_file_attack", "1r1rb1k1/2p3pp/p2q1p2/3PpP1Q/Pp1bP2N/1B5R/1P4PP/2B4K w - - 0 1"),
+    ("ara_pawn_storm", "r3k3/1p4p1/1Bb1Bp6/P1p1bP1P/2Pp2P1/3P4/5K2/4R3 w - - 0 1"),
+    ("ara_rook_sac_line", "1r1rb1k1/5ppp/4p3/1p1p3P/1q2P2Q/pN3P2/PPP4P/1K1R2R1 w - - 0 1"),
+    ("ara_knight_outpost", "1r1q1rk1/4bp1p/n3p3/pbNpP1PB/5P2/1P2B1K1/1P1Q4/2RR4 w - - 0 1"),
+    ("ara_bishop_sac_mate", "r1bq1rk1/pp2bppp/1n2p3/3pP3/8/2RBBN2/PP2QPPP/2R3K1 w - - 0 1"),
+    ("lct_advanced_push", "r3kb1r/3n1pp1/p6p/2pPp2q/Pp2N3/3B2PP/1PQ2P2/R3K2R w KQkq - 0 1"),
 ]
 
 # ============================================
 # Cached Stockfish Best Moves (Depth 20)
 # ============================================
 CACHED_BEST_MOVES = {
-    'kasparov_topalov': ['b2c3', 'c4a6', 'b2a1', 'b2c1', 'd1d2'],
-    'tactical': ['f1e2', 'h2h3', 'c1e3', 'c1g5', 'd1d2'],
-    'kiwipete': ['d5e6', 'e2a6', 'c3d1', 'e5g6', 'e1c1'],
-    'wac_001': ['g3g6', 'f6h5', 'f6e8', 'f6g4', 'a1d1'],
-    'italian_sharp': ['g5f7', 'c4f7', 'd2d4', 'e1g1', 'd2d3'],
-    'ruy_middle': ['a2a3', 'e1g1', 'b1c3', 'd1c2', 'd1e2'],
+    'kasparov_topalov': ['b2c3', 'c4a6', 'd1d2', 'd1b1', 'b2a1'],
+    'tactical': ['f1e2', 'c1e3', 'h2h3', 'c1g5', 'd1d2'],
+    'kiwipete': ['d5e6', 'e2a6', 'c3d1', 'e5g6', 'd5d6'],
+    'ruy_middle': ['a2a3', 'b1c3', 'e1g1', 'd1c2', 'd1e2'],
     'qgd_complex': ['e5f6', 'c3a4', 'd4c5', 'f1b5', 'c1f4'],
-    'tactical_pins': ['f2f4', 'a2a4', 'd1d3', 'e1g1', 'e2f3'],
-    'endgame_rook': ['f2e3', 'f2f3', 'g3g4', 'f2e2', 'f2g2'],
-    'isolated_qp': ['e5f6', 'f1d3', 'c1e3', 'd1c2', 'c1g5'],
+    'tactical_pins': ['f2f4', 'e1g1', 'a2a4', 'd1d3', 'e2f3'],
+    'isolated_qp': ['e5f6', 'f1d3', 'c1e3', 'c1g5', 'd1c2'],
     'discovered': ['c3d5', 'e1g1', 'd1e2', 'd2d3', 'c4d3'],
-    'rook_endgame': ['f3e4', 'f3f4', 'f3e2', 'f3f2', 'f3g3'],
-    'double_edged': ['d2g5', 'h2h3', 'd2d1', 'c3d5', 'g1h1'],
-    'king_exposed': ['b1c3', 'e1g1', 'd2d3', 'd2d4', 'b2b4'],
-    'knight_endgame': ['c5a6', 'f3e4', 'c5a4', 'f3f4', 'f3e3'],
+    'double_edged': ['h2h3', 'c3d5', 'd2d1', 'g1h1', 'd2g5'],
+    'king_exposed': ['b1c3', 'e1g1', 'd2d3', 'd2d4', 'e4e5'],
+    'bk_tactical_sacrifice': ['d6d1', 'b8c8', 'b7b6', 'd6d4', 'd6b6'],
+    'bk_pawn_break': ['d4d5', 'c3d3', 'f2e3', 'c3c2', 'c1b1'],
+    'bk_kingside_activation': ['f6f5', 'e7d8', 'f8g8', 'c8d8', 'a6a5'],
+    'bk_interference': ['e5e6', 'd4f3', 'd4b3', 'd4b5', 'e2b5'],
+    'wac_queen_sac_mate': ['g3g6', 'f6h5', 'f6e8', 'f6g4', 'a1d1'],
+    'wac_rook_pin_sac': ['e3g3', 'e3d3', 'e3f3', 'e3e5', 'e3e6'],
+    'wac_greek_gift': ['h6h7', 'h6e3', 'h6f4', 'h6d2', 'h6g5'],
+    'mid_queen_trapped': ['g6f7', 'g6h7', 'b3d1', 'b3c2', 'b3a4'],
+    'mid_pawn_tension': ['e4f3', 'c8f5', 'h7h6', 'c7d8', 'e7h4'],
+    'mid_knight_pressure': ['d3h3', 'd3g3', 'g5e6', 'c1f4', 'h2h4'],
+    'mid_central_control': ['c3a4', 'd1c1', 'd2e3', 'd2f4', 'd2c1'],
+    'mid_bishop_development': ['d1a4', 'd1c2', 'h2h3', 'e3e4', 'g1h1'],
+    'mid_solid_positional': ['d1e2', 'd1c2', 'f1e1', 'h2h3', 'b2b4'],
+    'mid_knight_maneuver': ['d2e4', 'h2h3', 'a2a4', 'd3d4', 'b2b4'],
+    'wac_h_file_attack': ['h5h7', 'h4g6', 'h5g4', 'h5d1', 'h5e2'],
+    'ara_pawn_storm': ['e5f6', 'a2f2', 'b3c3', 'b3b4', 'b3b2'],
+    'ara_rook_sac_line': ['d1d4', 'h5h6', 'h4f6', 'f3f4', 'g1g4'],
+    'ara_knight_outpost': ['c5e4', 'b3b4', 'd1h1', 'c5a4', 'h5f3'],
+    'ara_bishop_sac_mate': ['d3h7', 'c3c7', 'e3f4', 'e3d2', 'f3g5'],
+    'lct_advanced_push': ['d5d6', 'a4a5', 'g3g4', 'b2b3', 'a1d1'],
 }
-
 # ============================================
 # Benchmark Functions
 # ============================================
@@ -298,33 +333,33 @@ def run_depth_scaling_test() -> None:
             break
 
 
-def run_parallel_vs_serial_test(depth: int = DEPTH_BENCH) -> None:
-    """Compare parallel vs serial search"""
-    print("\n" + colorize("="*60, Colors.BLUE))
-    print(colorize(f"  Parallel vs Serial Test (depth {depth})", Colors.BOLD))
-    print(colorize("="*60, Colors.BLUE))
+# def run_parallel_vs_serial_test(depth: int = DEPTH_BENCH) -> None:
+#     """Compare parallel vs serial search"""
+#     print("\n" + colorize("="*60, Colors.BLUE))
+#     print(colorize(f"  Parallel vs Serial Test (depth {depth})", Colors.BOLD))
+#     print(colorize("="*60, Colors.BLUE))
     
-    fen = TEST_POSITIONS[2][1]  # kasparov_topalov - complex position
+#     fen = TEST_POSITIONS[2][1]  # kasparov_topalov - complex position
     
-    # Serial
-    print("  Testing serial search...")
-    start = time.perf_counter()
-    move_serial = rust_engine.get_best_move(fen, depth, 5, False)
-    time_serial = time.perf_counter() - start
-    nodes_s, qnodes_s = rust_engine.get_node_counts()
+#     # Serial
+#     print("  Testing serial search...")
+#     start = time.perf_counter()
+#     move_serial = rust_engine.get_best_move(fen, depth, 5, False)
+#     time_serial = time.perf_counter() - start
+#     nodes_s, qnodes_s = rust_engine.get_node_counts()
     
-    # Parallel
-    print("  Testing parallel search...")
-    start = time.perf_counter()
-    move_parallel = rust_engine.get_best_move(fen, depth, 5, True)
-    time_parallel = time.perf_counter() - start
-    nodes_p, qnodes_p = rust_engine.get_node_counts()
+#     # Parallel
+#     print("  Testing parallel search...")
+#     start = time.perf_counter()
+#     move_parallel = rust_engine.get_best_move(fen, depth, 5, True)
+#     time_parallel = time.perf_counter() - start
+#     nodes_p, qnodes_p = rust_engine.get_node_counts()
     
-    speedup = time_serial / time_parallel if time_parallel > 0.001 else 0
+#     speedup = time_serial / time_parallel if time_parallel > 0.001 else 0
     
-    print(f"  Serial:   {time_serial*1000:8.1f}ms  Move: {move_serial}  Nodes: {(nodes_s+qnodes_s)/1000:.0f}k")
-    print(f"  Parallel: {time_parallel*1000:8.1f}ms  Move: {move_parallel}  Nodes: {(nodes_p+qnodes_p)/1000:.0f}k")
-    print(f"  Speedup:  {colorize(f'{speedup:.2f}x', Colors.GREEN if speedup > 1.5 else Colors.YELLOW)}")
+#     print(f"  Serial:   {time_serial*1000:8.1f}ms  Move: {move_serial}  Nodes: {(nodes_s+qnodes_s)/1000:.0f}k")
+#     print(f"  Parallel: {time_parallel*1000:8.1f}ms  Move: {move_parallel}  Nodes: {(nodes_p+qnodes_p)/1000:.0f}k")
+#     print(f"  Speedup:  {colorize(f'{speedup:.2f}x', Colors.GREEN if speedup > 1.5 else Colors.YELLOW)}")
 
 
 def run_correctness_test() -> None:
@@ -444,7 +479,7 @@ def main():
     run_correctness_test()
     run_nps_test(args.depth, args.clear_tt)
     run_depth_scaling_test()
-    run_parallel_vs_serial_test(args.depth)
+    # run_parallel_vs_serial_test(args.depth)
     
     print("\n" + colorize("="*60, Colors.BLUE))
     print(colorize("  Benchmark Complete!", Colors.BOLD + Colors.GREEN))

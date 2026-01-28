@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 /// TT size: 2^22 = 4,194,304 entries (~64MB with 16 bytes per entry)
 const TT_SIZE: usize = 1 << 22;
 const TT_MASK: usize = TT_SIZE - 1;
+const MAX_PLY: u8 = 100; // Limit recursion to prevent Stack Overflow
 
 /// Atomic TT entry - 16 bytes total (2 x u64)
 #[repr(C)]
@@ -78,7 +79,7 @@ pub fn encode_move(mv: ChessMove) -> u16 {
 
 /// Decode a u16 into ChessMove (requires board to validate)
 #[inline(always)]
-pub fn decode_move(encoded: u16, _board: &Board) -> Option<ChessMove> {
+pub fn decode_move(encoded: u16) -> Option<ChessMove> {
     if encoded == 0 {
         return None;
     }
@@ -107,38 +108,26 @@ pub fn decode_move(encoded: u16, _board: &Board) -> Option<ChessMove> {
 // LOCK-FREE GLOBAL TRANSPOSITION TABLE
 // =============================================================================
 
-use std::cell::UnsafeCell;
-use std::sync::Once;
+use std::sync::OnceLock;
 
-struct GlobalTT {
-    data: UnsafeCell<Vec<TTEntry>>,
-}
-
-unsafe impl Sync for GlobalTT {}
-unsafe impl Send for GlobalTT {}
-
-static mut GLOBAL_TT: Option<GlobalTT> = None;
-static INIT: Once = Once::new();
+// Safe global TT using OnceLock
+static GLOBAL_TT: OnceLock<Vec<TTEntry>> = OnceLock::new();
 
 #[inline(always)]
-fn get_tt() -> *mut TTEntry {
-    unsafe {
-        INIT.call_once(|| {
-            let mut v = Vec::with_capacity(TT_SIZE);
-            v.resize_with(TT_SIZE, TTEntry::default);
-            GLOBAL_TT = Some(GlobalTT {
-                data: UnsafeCell::new(v),
-            });
-        });
-        (*GLOBAL_TT.as_ref().unwrap().data.get()).as_mut_ptr()
-    }
+fn get_tt() -> &'static [TTEntry] {
+    GLOBAL_TT.get_or_init(|| {
+        let mut v = Vec::with_capacity(TT_SIZE);
+        v.resize_with(TT_SIZE, TTEntry::default);
+        v
+    })
 }
 
 /// Probe the transposition table - LOCKLESS & SAFE
 #[inline(always)]
 pub fn tt_probe(hash: u64) -> Option<(TTEntryData, TTFlag)> {
     let idx = (hash as usize) & TT_MASK;
-    let entry = unsafe { &*get_tt().add(idx) };
+    // Safe because TT_MASK ensures bounds and OnceLock ensures initialization
+    let entry = unsafe { get_tt().get_unchecked(idx) };
 
     // Read Key -> Data -> Key
     let key = entry.hash.load(Ordering::Acquire);
@@ -176,7 +165,7 @@ pub fn tt_probe(hash: u64) -> Option<(TTEntryData, TTFlag)> {
 #[inline(always)]
 fn tt_store(hash: u64, depth: u8, score: i32, flag: TTFlag, best_move: Option<ChessMove>) {
     let idx = (hash as usize) & TT_MASK;
-    let entry = unsafe { &*get_tt().add(idx) };
+    let entry = unsafe { get_tt().get_unchecked(idx) };
 
     let old_data = entry.data.load(Ordering::Relaxed);
     let old_depth = ((old_data >> 32) & 0xFF) as u8;
@@ -216,16 +205,17 @@ fn is_debug() -> bool {
 }
 
 pub fn tt_clear() {
-    unsafe {
-        if let Some(tt) = GLOBAL_TT.as_ref() {
-            let entries = &*tt.data.get();
-            for entry in entries {
-                entry.hash.store(0, Ordering::Relaxed);
-                entry.data.store(0, Ordering::Relaxed);
-            }
-            if is_debug() {
-                eprintln!("[DEBUG] TT cleared - {} entries zeroed", TT_SIZE);
-            }
+    // Only clear if initialized
+    if let Some(entries) = GLOBAL_TT.get() {
+        for entry in entries {
+            entry.hash.store(0, Ordering::Relaxed);
+            entry.data.store(0, Ordering::Relaxed);
+        }
+        // Increment Epoch to signal thread-local history clearing
+        HISTORY_EPOCH.fetch_add(1, Ordering::Relaxed);
+
+        if is_debug() {
+            eprintln!("[DEBUG] TT cleared - {} entries zeroed", TT_SIZE);
         }
     }
 }
@@ -242,7 +232,12 @@ thread_local! {
 
 thread_local! {
     pub static COUNTER_HISTORY: std::cell::RefCell<Box<[[[[i16; 64]; 64]; 64]; 64]>> =
-        std::cell::RefCell::new(Box::new([[[[0; 64]; 64]; 64]; 64]));
+        std::cell::RefCell::new({
+            // Use Vec to allocate on heap, then convert to Box<[T; N]> to avoid stack overflow
+            // Element size is 64*64*64*2 = 512KB, which fits on stack. Total 32MB fits on heap.
+            let v = vec![[[[0; 64]; 64]; 64]; 64];
+            v.into_boxed_slice().try_into().unwrap()
+        });
 }
 
 thread_local! {
@@ -254,6 +249,10 @@ const MATE_SCORE: i32 = 29000;
 
 // Thread-local counter to reduce atomic contention (batch updates to global)
 thread_local!(static LOCAL_NODE_COUNTER: std::cell::Cell<u64> = std::cell::Cell::new(0));
+
+// Epoch for clearing thread-local history
+static HISTORY_EPOCH: AtomicU64 = AtomicU64::new(0);
+thread_local!(static LOCAL_EPOCH: std::cell::Cell<u64> = std::cell::Cell::new(0));
 
 static NODE_COUNT: AtomicU64 = AtomicU64::new(0);
 static QNODE_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -308,6 +307,38 @@ pub fn get_node_counts() -> (u64, u64) {
     (NODE_COUNT.load(Ordering::Relaxed), QNODE_COUNT.load(Ordering::Relaxed))
 }
 
+/// Check and clear thread-local history if epoch changed
+#[inline(always)]
+fn check_and_clear_history() {
+    let global_epoch = HISTORY_EPOCH.load(Ordering::Relaxed);
+    LOCAL_EPOCH.with(|e| {
+        if e.get() < global_epoch {
+            // Clear History
+            HISTORY.with(|h| {
+                for i in 0..64 {
+                    for j in 0..64 {
+                        h.borrow_mut()[i][j] = 0;
+                    }
+                }
+            });
+            
+            // Clear Killers
+            KILLERS.with(|k| {
+                *k.borrow_mut() = [[None; 2]; 64];
+            });
+            
+            // Clear Counter History (Safe Heap Allocation)
+            COUNTER_HISTORY.with(|ch| {
+                // Defeat Stack Overflow: Allocate on heap first!
+                let v = vec![[[[0; 64]; 64]; 64]; 64];
+                *ch.borrow_mut() = v.into_boxed_slice().try_into().unwrap();
+            });
+            
+            e.set(global_epoch);
+        }
+    });
+}
+
 #[inline(always)]
 fn update_killers(ply: u8, mv: ChessMove) {
     let ply_idx = (ply as usize).min(63);
@@ -324,12 +355,30 @@ fn update_killers(ply: u8, mv: ChessMove) {
 fn update_history(mv: ChessMove, depth: u8) {
     let from = mv.get_source().to_index();
     let to = mv.get_dest().to_index();
+    
+    // Gravity / Decay Logic (Stockfish Style)
+    // Bonus is capped to prevent overflow
+    let bonus = ((depth as i32) * (depth as i32)).min(400); 
+
     HISTORY.with(|h| {
         let mut hist = h.borrow_mut();
-        hist[from][to] += (depth as i32) * (depth as i32);
-        if hist[from][to] > 10000 {
-            hist[from][to] = 10000;
-        }
+        let old_score = hist[from][to];
+        
+        // "Gravity": New Score = Old + Bonus - (Old * |Bonus|) / Scale
+        // This naturally decays the score if Bonus is 0 (though here always positive for good moves)
+        // Wait, standard history update is ONLY positive for beta-cutoffs.
+        // True "Gravity" requires penalizing other moves. that's intricate.
+        // For now, let's implement "Variable Term Approach":
+        // score += bonus - score * abs(bonus) / 16384
+        
+        // Constant 10000 limit is simplistic. Let's use decayed update.
+        let term = bonus - (old_score * bonus.abs() / 512); // Reduced scale for faster adaptation
+        
+        hist[from][to] += term;
+        
+        // Soft clamp just in case
+        if hist[from][to] > 10000 { hist[from][to] = 10000; }
+        if hist[from][to] < -10000 { hist[from][to] = -10000; }
     });
 }
 
@@ -349,14 +398,15 @@ fn update_counter_history(prev_mv: Option<ChessMove>, curr_mv: ChessMove, depth:
     }
 }
 
-fn quiescence(board: &Board, mut alpha: i32, beta: i32, ply: u8) -> i32 {
+fn quiescence(board: &Board, eval_state: eval::EvalState, mut alpha: i32, beta: i32, ply: u8) -> i32 {
     QNODE_COUNT.fetch_add(1, Ordering::Relaxed);
     
-    if ply > 32 {
-        return eval::evaluate_lazy(board, alpha, beta);
-    }
+    // Pass existing state! O(1)
+    let stand_pat = eval::evaluate_lazy(board, &eval_state, alpha, beta);
     
-    let stand_pat = eval::evaluate_lazy(board, alpha, beta);
+    if ply > 32 {
+        return stand_pat;
+    }
     
     if stand_pat >= beta {
         return beta;
@@ -384,7 +434,7 @@ fn quiescence(board: &Board, mut alpha: i32, beta: i32, ply: u8) -> i32 {
     for m in gen {
          // SEE Pruning: Skip bad captures (e.g. QxP protected)
          // Exception: Promotions are always interesting
-         if !eval::is_capture(board, m) { continue; } // Should be redundant due to mask
+         if !eval::is_tactical(board, m) { continue; } // Quiets (except promotions) are pruned
          
          let see_val = eval::see(board, m);
          if see_val < 0 {
@@ -415,9 +465,13 @@ fn quiescence(board: &Board, mut alpha: i32, beta: i32, ply: u8) -> i32 {
         list.swap(i, best_idx);
         let mv = list[i].mv;
         
+        // Incremental Update
+        let mut new_eval = eval_state;
+        new_eval.apply_move(board, mv);
+        
         // Move processing
         let new_board = board.make_move_new(mv);
-        let score = -quiescence(&new_board, -beta, -alpha, ply + 1);
+        let score = -quiescence(&new_board, new_eval, -beta, -alpha, ply + 1);
         
         if score >= beta {
             return beta;
@@ -441,6 +495,8 @@ fn negamax(
     null_ok: bool,
     time_manager: Option<TimeManager>,
 ) -> (i32, Option<ChessMove>) {
+    if ply >= MAX_PLY { return (eval::evaluate(board), None); }
+
     // Optimized: Use thread-local counter to batch atomic updates
     let check_time = LOCAL_NODE_COUNTER.with(|c| {
         let count = c.get() + 1;
@@ -471,7 +527,7 @@ fn negamax(
     }
     
     if depth == 0 {
-        let q_score = quiescence(board, alpha, beta, 0);
+        let q_score = quiescence(board, eval_state, alpha, beta, 0);
         return (q_score, None);
     }
     
@@ -484,7 +540,7 @@ fn negamax(
 
     // Decode AND VALIDATE the TT move
     let tt_move: Option<ChessMove> = tt_result.as_ref()
-        .and_then(|(e, _)| decode_move(e.best_move, board))
+        .and_then(|(e, _)| decode_move(e.best_move))
         .filter(|&mv| board.legal(mv)); 
     
     if let Some((entry, flag)) = tt_result {
@@ -512,15 +568,8 @@ fn negamax(
         }
     }
     
-    if !in_check && depth <= 3 && tt_move.is_none() {
-        let razor_margin = 300 + 200 * depth as i32;
-        if static_eval + razor_margin < alpha {
-            let qscore = quiescence(board, alpha, beta, 0);
-            if qscore < alpha {
-                return (alpha, None);
-            }
-        }
-    }
+    // Razoring removed (Stockfish HCE audit) -- proved ineffective at modern depths
+    // if !in_check && depth <= 3 && tt_move.is_none() { ... }
     
     // Null Move Pruning
     let us = board.side_to_move();
@@ -529,9 +578,10 @@ fn negamax(
 
     if null_ok && !in_check && !is_endgame && !zugzwang_risk && depth >= 3 {
         // Dynamic R based on static_eval to be safer? No, standard 3 is fine for depth > 6.
-        let r = if depth > 6 { 3 } else { 2 };
+        // let r = if depth > 6 { 3 } else { 2 };
         if let Some(null_board) = board.null_move() {
-            let r = 2;
+            // Adaptive NMP reduction (Stockfish formula: 3 + depth/6)
+            let r = 3 + depth / 6;
             let (score, _) = negamax(&null_board, eval_state, None, depth.saturating_sub(1 + r), -beta, -beta + 1, ply + 1, false, time_manager);
             let score = -score;
             if STOP_SEARCH.load(Ordering::Relaxed) { return (0, None); }
@@ -577,7 +627,7 @@ fn negamax(
          let iid_depth = depth - 2;
          let _ = negamax(board, eval_state, prev_move, iid_depth, alpha, beta, ply, null_ok, time_manager);
          if let Some((entry, _)) = tt_probe(hash) {
-             tt_move = decode_move(entry.best_move, board);
+             tt_move = decode_move(entry.best_move);
          }
     }
 
@@ -634,25 +684,27 @@ fn negamax(
         moves_searched += 1;
         let is_capture = eval::is_capture(board, mv);
         
-        let lmp_threshold = [0, 5, 8, 12, 16, 20, 24, 28][depth.min(7) as usize];
-        if depth <= 5 && !in_check && !is_capture && i >= lmp_threshold && i > 0 {
+        let mut new_eval = eval_state;
+        new_eval.apply_move(board, mv);
+        let new_board = board.make_move_new(mv);
+        let gives_check = *new_board.checkers() != chess::EMPTY;
+        
+        // LMP: Late Move Pruning
+        // Formula: count > (24 + depth * depth) (Relaxed from 16)
+        let lmp_threshold = (24 + depth as usize * depth as usize).min(63);
+        if depth <= 5 && !in_check && !eval::is_tactical(board, mv) && !gives_check && i >= lmp_threshold && i > 0 {
             continue;
         }
         
-        if depth <= 4 && !in_check && !is_capture && i > 0 {
+        if depth <= 4 && !in_check && !eval::is_tactical(board, mv) && !gives_check && i > 0 {
             let margin = 200 * depth as i32;
             if static_eval + margin < alpha {
                 continue;
             }
         }
         
-        let mut new_eval = eval_state;
-        new_eval.apply_move(board, mv);
-        let new_board = board.make_move_new(mv);
-        let gives_check = *new_board.checkers() != chess::EMPTY;
-        
         let mut reduction = 0u8;
-        if i >= 2 && depth >= 3 && !is_capture && !gives_check && !in_check {
+        if i >= 2 && depth >= 4 && !eval::is_tactical(board, mv) && !gives_check && !in_check {
              let ply_idx = (ply as usize).min(63);
              let is_killer = KILLERS.with(|k| {
                  let k = k.borrow();
@@ -661,8 +713,22 @@ fn negamax(
 
              if !is_killer {
                  // Logarithmic Reduction
-                 let r = 1.0 + (depth as f32).ln() * (i as f32).ln() / 2.6;
-                 reduction = r as u8;
+                 let mut r = 1.0 + (depth as f32).ln() * (i as f32).ln() / 2.6;
+
+                 // History-based LMR reduction
+                 // Good history -> reduce less. Bad history -> reduce more.
+                 let hist_score = HISTORY.with(|h| {
+                     let h = h.borrow();
+                     let from = mv.get_source().to_index();
+                     let to = mv.get_dest().to_index();
+                     h[from][to]
+                 });
+                 
+                 // Reduce less if history is high (bonus). Re-add if history is low (malus).
+                 // Tune: Dampened effect (divide by 8192.0 instead of 2048) to be safer
+                 r -= (hist_score as f32) / 8192.0; 
+                 
+                 reduction = r.clamp(0.0, depth as f32) as u8;
              }
         }
         
@@ -748,6 +814,7 @@ fn iterative_deepening_worker(
     time_manager: Option<TimeManager>,
     is_main_thread: bool
 ) -> (Option<ChessMove>, i32) {
+    check_and_clear_history();
     AGGRESSIVENESS.with(|a| a.set(aggressiveness));
     
     reset_thread_local_stats();

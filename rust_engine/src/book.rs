@@ -12,7 +12,7 @@ pub struct BookEntry {
     pub key: u64,
     pub mv: u16,
     pub weight: u16,
-    pub learn: u32,
+    pub _learn: u32,
 }
 
 /// Opening book reader
@@ -40,7 +40,8 @@ impl OpeningBook {
         for _ in 0..entry_count {
             let mut buf = [0u8; 16];
             if reader.read_exact(&mut buf).is_err() {
-                break;
+                eprintln!("Error: Failed to read complete book entry");
+                return None;
             }
             
             // Use slice-to-array conversion for cleaner parsing
@@ -48,7 +49,7 @@ impl OpeningBook {
                 key: u64::from_be_bytes(buf[0..8].try_into().unwrap()),
                 mv: u16::from_be_bytes(buf[8..10].try_into().unwrap()),
                 weight: u16::from_be_bytes(buf[10..12].try_into().unwrap()),
-                learn: u32::from_be_bytes(buf[12..16].try_into().unwrap()),
+                _learn: u32::from_be_bytes(buf[12..16].try_into().unwrap()),
             };
             
             entries.push(entry);

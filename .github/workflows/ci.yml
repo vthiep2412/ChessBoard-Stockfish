@@ -1,0 +1,30 @@
+name: Windows Engine CI
+
+on:
+  push: # Runs on ANY branch
+  pull_request: # Runs on ANY branch
+
+jobs:
+  windows_build_and_benchmark:
+    runs-on: windows-latest
+
+    steps:
+      # 1. Check out your code
+      - uses: actions/checkout@v4
+
+      # 2. Run your Build Script
+      - name: Run Build Script
+        shell: cmd
+        run: |
+          call rust_engine\build.bat
+
+      # 3. Set up Python (Required to run benchmark.py)
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.13.9"
+
+      # 4. Run Benchmark (No Stockfish download needed)
+      - name: Run Benchmark
+        run: |
+          python rust_engine\benchmark.py
