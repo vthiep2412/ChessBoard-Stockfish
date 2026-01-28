@@ -415,11 +415,6 @@ fn quiescence(board: &Board, eval_state: eval::EvalState, mut alpha: i32, beta: 
         alpha = stand_pat;
     }
     
-    const DELTA: i32 = eval::QUEEN_VAL[0]; // Increased to approx Queen value (synced with eval)
-    if stand_pat + DELTA < alpha {
-        return alpha;
-    }
-    
     let mut targets = *board.color_combined(!board.side_to_move());
     if let Some(ep_sq) = board.en_passant() {
         targets |= chess::BitBoard::from_square(ep_sq);
@@ -431,10 +426,12 @@ fn quiescence(board: &Board, eval_state: eval::EvalState, mut alpha: i32, beta: 
     // Allocation-free MoveList
     let mut captures = crate::movegen::MoveList::new();
     
+    // Qodo: Track promotions to defer delta pruning
+    let mut has_promotions = false;
+    
     for m in gen {
-         // SEE Pruning: Skip bad captures (e.g. QxP protected)
-         // Exception: Promotions are always interesting
-         if !eval::is_tactical(board, m) { continue; } // Quiets (except promotions) are pruned
+         // Skip non-tactical moves
+         if !eval::is_tactical(board, m) { continue; }
          
          // Removed SEE pruning because eval::see is broken (returns negative for good captures)
          // if eval::see(board, m) < 0 { continue; }
@@ -452,10 +449,20 @@ fn quiescence(board: &Board, eval_state: eval::EvalState, mut alpha: i32, beta: 
                      continue;
                  }
              }
+         if m.get_promotion().is_some() {
+             has_promotions = true;
          }
 
+         // SEE pruning removed (eval::see was buggy)
          let score = eval::mvv_lva_score(board, m);
          captures.push(m, score);
+    }
+    
+    // Qodo: Delta pruning AFTER checking for promotions
+    // Don't prune if there are promotions (they can change material significantly)
+    const DELTA: i32 = 2500; // ~Queen value
+    if !has_promotions && stand_pat + DELTA < alpha {
+        return alpha;
     }
     
     // Convert to mutable slice for in-place selection sort
@@ -641,7 +648,8 @@ fn negamax(
          let iid_depth = depth - 2;
          let _ = negamax(board, eval_state, prev_move, iid_depth, alpha, beta, ply, null_ok, time_manager);
          if let Some((entry, _)) = tt_probe(hash) {
-             tt_move = decode_move(entry.best_move);
+             // Code Rabbit Fix: Validate IID TT move legality
+             tt_move = decode_move(entry.best_move).filter(|&mv| board.legal(mv));
          }
     }
 
