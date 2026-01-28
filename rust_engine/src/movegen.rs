@@ -106,9 +106,9 @@ impl<'a> StagedMoveGen<'a> {
         for m in gen {
              if Some(m) == self.tt_move { continue; }
 
-             let see = eval::see(self.board, m);
              // Higher is better
-             let score = eval::mvv_lva_score(self.board, m) + see * 10;
+             // Removed broken SEE scaling which distorted capture ordering
+             let score = eval::mvv_lva_score(self.board, m);
              self.captures.push(m, score);
         }
     }
