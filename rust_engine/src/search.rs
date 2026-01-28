@@ -415,7 +415,7 @@ fn quiescence(board: &Board, eval_state: eval::EvalState, mut alpha: i32, beta: 
         alpha = stand_pat;
     }
     
-    const DELTA: i32 = 2500; // Increased to approx Queen value
+    const DELTA: i32 = eval::QUEEN_VAL[0]; // Increased to approx Queen value (synced with eval)
     if stand_pat + DELTA < alpha {
         return alpha;
     }
@@ -438,6 +438,19 @@ fn quiescence(board: &Board, eval_state: eval::EvalState, mut alpha: i32, beta: 
          
          // Removed SEE pruning because eval::see is broken (returns negative for good captures)
          // if eval::see(board, m) < 0 { continue; }
+
+         // Temporary cheap capture filter while eval::see is broken:
+         // prune clearly losing captures based on a static material delta.
+         if let (Some(captured_piece), Some(attacker_piece)) = (board.piece_on(m.get_dest()), board.piece_on(m.get_source())) {
+             let captured_value = eval::piece_value(captured_piece);
+             let attacker_value = eval::piece_value(attacker_piece);
+             let material_delta = captured_value - attacker_value;
+
+             // Conservative pruning: If material gain + small margin < alpha, prune.
+             if stand_pat + material_delta + 200 < alpha {
+                 continue;
+             }
+         }
 
          let score = eval::mvv_lva_score(board, m);
          captures.push(m, score);

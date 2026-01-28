@@ -5,13 +5,14 @@ use chess::{Board, Color, Piece, Square, File, BitBoard};
 // =============================================================================
 
 // Material values (mg, eg)
-const PAWN_VAL: [i32; 2] = [128, 172];
-const KNIGHT_VAL: [i32; 2] = [781, 854];
-const BISHOP_VAL: [i32; 2] = [825, 915];
-const ROOK_VAL: [i32; 2] = [1276, 1380];
-const QUEEN_VAL: [i32; 2] = [2538, 2682];
+pub const PAWN_VAL: [i32; 2] = [128, 172];
+pub const KNIGHT_VAL: [i32; 2] = [781, 854];
+pub const BISHOP_VAL: [i32; 2] = [825, 915];
+pub const ROOK_VAL: [i32; 2] = [1276, 1380];
+pub const QUEEN_VAL: [i32; 2] = [2538, 2682];
 
 // King Safety Constants
+// Tuned values: Increased to punish open kings more severely (Range 0-25)
 const ATTACK_WEIGHT: [i32; 5] = [0, 10, 10, 15, 25]; // Piece types: Pawn=0, Knight=1, Bishop=2, Rook=3, Queen=4
 const SAFETY_TABLE: [i32; 100] = [
     0,  0,   1,   2,   3,   5,   7,   9,  12,  15,
@@ -628,6 +629,20 @@ pub fn mvv_lva_score(board: &Board, mv: chess::ChessMove) -> i32 {
     v_val * 10 - a_val + 100
 }
 
+/// Helper to get simple piece value (MG) for pruning
+pub fn piece_value(piece: Piece) -> i32 {
+    match piece {
+        Piece::Pawn => PAWN_VAL[0],
+        Piece::Knight => KNIGHT_VAL[0],
+        Piece::Bishop => BISHOP_VAL[0],
+        Piece::Rook => ROOK_VAL[0],
+        Piece::Queen => QUEEN_VAL[0],
+        Piece::King => 20000,
+    }
+}
+
+// TODO: DEPRECATED - This SEE implementation is broken (returns negative for good captures).
+// Do not use for pruning until fixed. Kept for reference.
 pub fn see(board: &Board, mv: chess::ChessMove) -> i32 {
     if !is_tactical(board, mv) {
         return 0;
