@@ -111,7 +111,7 @@ TEST_POSITIONS = [
     ("mid_solid_positional", "r2q1rk1/pp1n1ppp/2p1pn2/b7/2PP4/P1N2N2/1P1B1PPP/R2Q1RK1 w - - 1 1"),
     ("mid_knight_maneuver", "r2qr1k1/ppp2ppp/2n5/2bnp3/2B3b1/2PP1N2/PP1N1PPP/R1BQR1K1 w - - 0 1"),
     ("wac_h_file_attack", "1r1rb1k1/2p3pp/p2q1p2/3PpP1Q/Pp1bP2N/1B5R/1P4PP/2B4K w - - 0 1"),
-    ("ara_pawn_storm", "r3k3/1p4p1/1Bb1Bp6/P1p1bP1P/2Pp2P1/3P4/5K2/4R3 w - - 0 1"),
+    ("ara_pawn_storm", "r3k3/1p4p1/1Bb1Bp2/P1p1bP1P/2Pp2P1/3P4/5K2/4R3 w - - 0 1"), #fix fen invalid!
     ("ara_rook_sac_line", "1r1rb1k1/5ppp/4p3/1p1p3P/1q2P2Q/pN3P2/PPP4P/1K1R2R1 w - - 0 1"),
     ("ara_knight_outpost", "1r1q1rk1/4bp1p/n3p3/pbNpP1PB/5P2/1P2B1K1/1P1Q4/2RR4 w - - 0 1"),
     ("ara_bishop_sac_mate", "r1bq1rk1/pp2bppp/1n2p3/3pP3/8/2RBBN2/PP2QPPP/2R3K1 w - - 0 1"),
@@ -147,7 +147,7 @@ CACHED_BEST_MOVES = {
     'mid_solid_positional': ['d1e2', 'd1c2', 'f1e1', 'h2h3', 'b2b4'],
     'mid_knight_maneuver': ['d2e4', 'h2h3', 'a2a4', 'd3d4', 'b2b4'],
     'wac_h_file_attack': ['h5h7', 'h4g6', 'h5g4', 'h5d1', 'h5e2'],
-    'ara_pawn_storm': ['e5f6', 'a2f2', 'b3c3', 'b3b4', 'b3b2'],
+    'ara_pawn_storm': ['g4g5', 'e1e5', 'e1g1', 'e1a1', 'e1c1'],
     'ara_rook_sac_line': ['d1d4', 'h5h6', 'h4f6', 'f3f4', 'g1g4'],
     'ara_knight_outpost': ['c5e4', 'b3b4', 'd1h1', 'c5a4', 'h5f3'],
     'ara_bishop_sac_mate': ['d3h7', 'c3c7', 'e3f4', 'e3d2', 'f3g5'],
