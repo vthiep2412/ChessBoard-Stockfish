@@ -415,7 +415,7 @@ fn quiescence(board: &Board, eval_state: eval::EvalState, mut alpha: i32, beta: 
         alpha = stand_pat;
     }
     
-    const DELTA: i32 = 1000;
+    const DELTA: i32 = 2500; // Increased to approx Queen value
     if stand_pat + DELTA < alpha {
         return alpha;
     }
@@ -436,10 +436,8 @@ fn quiescence(board: &Board, eval_state: eval::EvalState, mut alpha: i32, beta: 
          // Exception: Promotions are always interesting
          if !eval::is_tactical(board, m) { continue; } // Quiets (except promotions) are pruned
          
-         let see_val = eval::see(board, m);
-         if see_val < 0 {
-             continue;
-         }
+         // Removed SEE pruning because eval::see is broken (returns negative for good captures)
+         // if eval::see(board, m) < 0 { continue; }
 
          let score = eval::mvv_lva_score(board, m);
          captures.push(m, score);
@@ -600,7 +598,8 @@ fn negamax(
         gen.set_iterator_mask(*targets);
 
         for mv in gen {
-            if eval::see(board, mv) < 0 { continue; }
+            // Removed SEE pruning
+            // if eval::see(board, mv) < 0 { continue; }
 
             let mut new_eval = eval_state;
             new_eval.apply_move(board, mv);

@@ -12,7 +12,7 @@ const ROOK_VAL: [i32; 2] = [1276, 1380];
 const QUEEN_VAL: [i32; 2] = [2538, 2682];
 
 // King Safety Constants
-const ATTACK_WEIGHT: [i32; 5] = [0, 2, 2, 3, 5]; // Piece types: Pawn=0, Knight=1, Bishop=2, Rook=3, Queen=4
+const ATTACK_WEIGHT: [i32; 5] = [0, 10, 10, 15, 25]; // Piece types: Pawn=0, Knight=1, Bishop=2, Rook=3, Queen=4
 const SAFETY_TABLE: [i32; 100] = [
     0,  0,   1,   2,   3,   5,   7,   9,  12,  15,
    18,  22,  26,  30,  35,  39,  44,  50,  56,  62,
@@ -442,7 +442,7 @@ fn eval_king_safety(board: &Board, color: Color) -> i32 {
     // TODO: Add storm logic later if needed (keeping it simple and fast for now)
     
     if attackers_count > 0 || attack_units > 0 {
-        let index = (attack_units as usize).min(49);
+        let index = (attack_units as usize).min(99);
         score -= SAFETY_TABLE[index];
     }
 
