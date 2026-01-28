@@ -26,5 +26,7 @@ jobs:
 
       # 4. Run Benchmark (No Stockfish download needed)
       - name: Run Benchmark
+        shell: cmd
         run: |
-          python rust_engine\benchmark.py
+          cd rust_engine
+          python benchmark.py 16
